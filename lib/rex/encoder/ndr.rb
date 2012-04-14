@@ -73,6 +73,18 @@ module NDR
 		return long(len) + long(0) + long(len) + string + align(string)
 	end
 
+	# Encode a string that is already unicode encoded and make it unique
+	# use to encode:
+	#       [unique] w_char *element_1;
+	def NDR.uwstring_prebuilt(string)
+		# if the string len is odd, thats bad!
+		if string.length % 2 > 0
+			string = string + "\x00"
+		end
+		len = string.length / 2;
+		return long(rand(0xffffffff)) + long(len) + long(0) + long(len) + string + align(string)
+	end
+
 	# alias to wstring, going away soon
 	def NDR.UnicodeConformantVaryingString(string)
 		NDR.wstring(string)
