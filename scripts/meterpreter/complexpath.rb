@@ -35,7 +35,7 @@ def run_exploit
 
         print_status("Loading the ComplexPath executable and DLL from the local system...")
         based = ::File.join(Msf::Config.install_root, "data", "exploits", "complexpath")
-        exp   = ::File.join(based, "ComplexPath.exe")
+        exp   = ::File.join(based, "exploit.exe")
 
         expdata = ""
         ::File.open(exp, "rb") do |fd|
