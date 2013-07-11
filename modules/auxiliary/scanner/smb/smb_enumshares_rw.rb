@@ -12,6 +12,7 @@ class Metasploit3 < Msf::Auxiliary
 
 	# Exploit mixins should be called first
 	include Msf::Exploit::Remote::SMB
+	include Msf::Exploit::Remote::SMB::Authenticated
 	include Msf::Exploit::Remote::DCERPC
 
 	# Scanner mixin should be near last
@@ -24,12 +25,17 @@ class Metasploit3 < Msf::Auxiliary
 			'Description'    => %q{
 				This module determines what shares are provided by the SMB service and which ones
 				are readable/writable. It also collects additional information such as share types,
-				files, writable paths, etc.
+				directories, files, time stamps, etc.
+
+				By default, a netshareenum request is done in order to retrieve share information,
+				but it this fails, you may also fall back to SRVSVC.  When SRVSVC is used, please
+				note the module will not attempt to enumerate more info like netshareenum.
 			},
 			'Author'         =>
 				[
 					'hdm',
-					'nebulus'
+					'nebulus',
+					'sinn3r'
 				],
 			'License'        => MSF_LICENSE,
 			'DefaultOptions' =>
@@ -37,6 +43,12 @@ class Metasploit3 < Msf::Auxiliary
 					'DCERPC::fake_bind_multi' => false
 				}
 		))
+
+		register_options(
+			[
+				OptBool.new('SHOW_SHARE',      [true, 'Show all the folders and files', false ]),
+				OptBool.new('USE_SRVSVC_ONLY', [true, 'List shares only with SRVSVC', false ])
+			], self.class)
 
 		deregister_options('RPORT', 'RHOST')
 	end
@@ -69,7 +81,7 @@ class Metasploit3 < Msf::Auxiliary
 		read = write = false
 		return false,false,nil,nil if share == 'IPC$'
 
-		simple.connect("\\\\#{ip}\\#{share}")
+		self.simple.connect("\\\\#{ip}\\#{share}")
 
 		begin
 			device_type = self.simple.client.queryfs_fs_device['device_type']
@@ -88,6 +100,7 @@ class Metasploit3 < Msf::Auxiliary
 			when /STATUS_INVALID_DEVICE_REQUEST/
 				return false,false,"Invalid device request"
 			when /0x00040002/
+				# Samba may throw this error too
 				return false,false,"Mac/Apple Clipboard?"
 			when /STATUS_NETWORK_ACCESS_DENIED/, /0x00030001/, /0x00060002/
 				# 0x0006002 = bad network name, 0x0030001 Directory not found
@@ -120,6 +133,8 @@ class Metasploit3 < Msf::Auxiliary
 
 		rfd = self.simple.client.find_first("\\")
 		read = true if rfd != nil
+
+		# Test writable
 		filename = Rex::Text.rand_text_alpha(rand(8))
 		wfd = simple.open("\\#{filename}", 'rwct')
 		wfd << Rex::Text.rand_text_alpha(rand(1024))
@@ -134,8 +149,7 @@ class Metasploit3 < Msf::Auxiliary
 		return read,write,msg,rfd
 
 		rescue ::Rex::Proto::SMB::Exceptions::NoReply,::Rex::Proto::SMB::Exceptions::InvalidType,
-			::Rex::Proto::SMB::Exceptions::ReadPacket,::Rex::Proto::SMB::Exceptions::ErrorCode => e
-			print_error(e.message)
+			::Rex::Proto::SMB::Exceptions::ReadPacket,::Rex::Proto::SMB::Exceptions::ErrorCode
 			return read,false,msg,rfd
 	end
 
@@ -153,7 +167,7 @@ class Metasploit3 < Msf::Auxiliary
 		os_info
 	end
 
-	def get_shares(ip, rport, info)
+	def lanman_netshareenum(ip, rport, info)
 		shares = []
 
 		res = self.simple.client.trans(
@@ -184,22 +198,68 @@ class Metasploit3 < Msf::Auxiliary
 			shares << [ sname, share_type(stype), scomm]
 		end
 
-		report_note(
-			:host   => ip,
-			:proto  => 'tcp',
-			:port   => rport,
-			:type   => 'smb.shares',
-			:data   => { :shares => shares.inspect },
-			:update => :unique_data
-		) unless shares.empty?
+		shares
+	end
 
-		os_info = get_os_info(ip, rport)
-		shares_info = "#{shares.map{|x| "#{x[0]}"}.join("\x00")}".gsub(/\x00/, ', ')
+	def srvsvc_netshareenum(ip)
+		shares = []
+		simple.connect("\\\\#{ip}\\IPC$")
+		handle = dcerpc_handle('4b324fc8-1670-01d3-1278-5a47bf6ee188', '3.0', 'ncacn_np', ["\\srvsvc"])
+		begin
+			dcerpc_bind(handle)
+		rescue Rex::Proto::SMB::Exceptions::ErrorCode => e
+			print_error("#{ip} : #{e.message}")
+			return []
+		end
 
-		if os_info
-			print_status("#{os_info}: Found #{shares.length.to_s} shares (#{shares_info})")
-		else
-			print_status("Found #{shares.length.to_s} shares (#{shares_info})")
+		stubdata =
+			NDR.uwstring("\\\\#{ip}") +
+			NDR.long(1)  #level
+
+		ref_id = stubdata[0,4].unpack("V")[0]
+		ctr = [1, ref_id + 4 , 0, 0].pack("VVVV")
+
+		stubdata << ctr
+		stubdata << NDR.align(ctr)
+		stubdata << ["FFFFFFFF"].pack("H*")
+		stubdata << [ref_id + 8, 0].pack("VV")
+		response = dcerpc.call(0x0f, stubdata)
+		res = response.dup
+		win_error = res.slice!(-4, 4).unpack("V")[0]
+		if win_error != 0
+			raise "DCE/RPC error : Win_error = #{win_error + 0}"
+		end
+		#remove some uneeded data
+		res.slice!(0,12) # level, CTR header, Reference ID of CTR
+		share_count = res.slice!(0, 4).unpack("V")[0]
+		res.slice!(0,4) # Reference ID of CTR1
+		share_max_count = res.slice!(0, 4).unpack("V")[0]
+
+		raise "Dce/RPC error : Unknow situation encountered count != count max (#{share_count}/#{share_max_count})" if share_max_count != share_count
+
+		# RerenceID / Type / ReferenceID of Comment
+		types = res.slice!(0, share_count * 12).scan(/.{12}/n).map{|a| a[4,2].unpack("v")[0]}
+
+		share_count.times do |t|
+			length, offset, max_length = res.slice!(0, 12).unpack("VVV")
+			raise "Dce/RPC error : Unknow situation encountered offset != 0 (#{offset})" if offset != 0
+			raise "Dce/RPC error : Unknow situation encountered length !=max_length (#{length}/#{max_length})" if length != max_length
+			name = res.slice!(0, 2 * length).gsub('\x00','')
+			res.slice!(0,2) if length % 2 == 1 # pad
+
+			comment_length, comment_offset, comment_max_length = res.slice!(0, 12).unpack("VVV")
+			raise "Dce/RPC error : Unknow situation encountered comment_offset != 0 (#{comment_offset})" if comment_offset != 0
+			if comment_length != comment_max_length
+				raise "Dce/RPC error : Unknow situation encountered comment_length != comment_max_length (#{comment_length}/#{comment_max_length})"
+			end
+			comment = res.slice!(0, 2 * comment_length).gsub('\x00','')
+			res.slice!(0,2) if comment_length % 2 == 1 # pad
+
+			name    = Rex::Text.to_ascii(name)
+			s_type  = Rex::Text.to_ascii(share_type(types[t]))
+			comment = Rex::Text.to_ascii(comment)
+
+			shares << [ name, s_type, comment ]
 		end
 
 		shares
@@ -278,37 +338,63 @@ class Metasploit3 < Msf::Auxiliary
 			begin
 				connect
 				smb_login
-				shares = get_shares(ip, rport, info)
+				if datastore['USE_SRVSVC_ONLY']
+					shares = srvsvc_netshareenum(ip)
+				else
+					shares = lanman_netshareenum(ip, rport, info)
+				end
+
+				os_info     = get_os_info(ip, rport)
+				print_status("#{ip}:#{rport} - #{os_info}") if os_info
+
+				shares_info = shares.map{|x| "#{x[0]} - #{x[2]} (#{x[1]})" }.join(", ")
+				print_status("#{ip}:#{rport} - #{shares_info}")
+
 				unless shares.empty?
-					get_files_info(ip, rport, shares, info)
+						report_note(
+						:host   => ip,
+						:proto  => 'tcp',
+						:port   => rport,
+						:type   => 'smb.shares',
+						:data   => { :shares => shares.inspect },
+						:update => :unique_data
+					)
+
+					if datastore['SHOW_SHARE'] and not datastore['USE_SRVSVC_ONLY']
+						get_files_info(ip, rport, shares, info)
+					end
+
 					break if rport == 139
 				end
+
 			rescue ::Interrupt
 				raise $!
 			rescue ::Rex::Proto::SMB::Exceptions::LoginError,
-				   ::Rex::Proto::SMB::Exceptions::ErrorCode => e
+				::Rex::Proto::SMB::Exceptions::ErrorCode => e
 				print_error(e.message)
 				return if e.message =~ /STATUS_ACCESS_DENIED/
 			rescue Errno::ECONNRESET,
-				   ::Rex::Proto::SMB::Exceptions::InvalidType,
-				   ::Rex::Proto::SMB::Exceptions::ReadPacket,
-				   ::Rex::Proto::SMB::Exceptions::InvalidCommand,
-				   ::Rex::Proto::SMB::Exceptions::InvalidWordCount,
-				   ::Rex::Proto::SMB::Exceptions::NoReply => e
+				::Rex::Proto::SMB::Exceptions::InvalidType,
+				::Rex::Proto::SMB::Exceptions::ReadPacket,
+				::Rex::Proto::SMB::Exceptions::InvalidCommand,
+				::Rex::Proto::SMB::Exceptions::InvalidWordCount,
+				::Rex::Proto::SMB::Exceptions::NoReply => e
 				print_error(e.message)
 				next if not shares.empty? and rport == 139 # no results, try again
 			rescue Errno::ENOPROTOOPT
+				print_status("Wait 5 seconds before retrying...")
 				select(nil, nil, nil, 5)
 				retry
 			rescue ::Exception => e
 				next if e.to_s =~ /execution expired/
 				next if not shares.empty? and rport == 139
 				print_error("Error: '#{ip}' '#{e.class}' '#{e.to_s}'")
+			ensure
+				disconnect
 			end
 
-			# if we already got results on 139, no need to try 445
-			return if (rport == 139 and not shares.empty?)
+			# if we already got results, not need to try on another port
+			return unless shares.empty?
 		end
-		disconnect
 	end
 end
