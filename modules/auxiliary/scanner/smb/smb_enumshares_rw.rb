@@ -134,11 +134,23 @@ class Metasploit3 < Msf::Auxiliary
 		return read,write,msg,rfd
 
 		rescue ::Rex::Proto::SMB::Exceptions::NoReply,::Rex::Proto::SMB::Exceptions::InvalidType,
-			::Rex::Proto::SMB::Exceptions::ReadPacket,::Rex::Proto::SMB::Exceptions::ErrorCode
+			::Rex::Proto::SMB::Exceptions::ReadPacket,::Rex::Proto::SMB::Exceptions::ErrorCode => e
+			print_error(e.message)
 			return read,false,msg,rfd
+	end
 
-		rescue ::Exception => e
-			print_error("Error: '#{ip}' '#{e.class}' '#{e.to_s}'")
+	def get_os_info(ip, rport)
+		os      = smb_fingerprint
+		os_info = "#{os['os']} #{os['sp']} (#{os['lang']})" if os['os'] != "Unknown"
+		report_service(
+			:host  => ip,
+			:port  => rport,
+			:proto => 'tcp',
+			:name  => 'smb',
+			:info  => os_info
+		) if os_info
+
+		os_info
 	end
 
 	def get_shares(ip, rport, info)
@@ -181,18 +193,10 @@ class Metasploit3 < Msf::Auxiliary
 			:update => :unique_data
 		) unless shares.empty?
 
-		os      = smb_fingerprint
-		os_info = "#{os['os']} #{os['sp']} (#{os['lang']})" if os['os'] != "Unknown"
+		os_info = get_os_info(ip, rport)
 		shares_info = "#{shares.map{|x| "#{x[0]}"}.join("\x00")}".gsub(/\x00/, ', ')
 
 		if os_info
-				report_service(
-				:host  => ip,
-				:port  => info[0],
-				:proto => 'tcp',
-				:name  => 'smb',
-				:info  => os_info
-			)
 			print_status("#{os_info}: Found #{shares.length.to_s} shares (#{shares_info})")
 		else
 			print_status("Found #{shares.length.to_s} shares (#{shares_info})")
@@ -208,12 +212,12 @@ class Metasploit3 < Msf::Auxiliary
 		list = shares.collect {|e| e[0]}
 		list.each do |x|
 			read,write,type,files = eval_host(ip, x)
-			if read or write
+			if files and (read or write)
 				header = "#{ip}:#{rport}"
 				if simple.client.default_domain and simple.client.default_name
 					header << " \\\\#{simple.client.default_domain}"
 				end
-				header << "\\#{simple.client.default_name}" if simple.client.default_name
+				header << "\\#{simple.client.default_name}\\#{x}" if simple.client.default_name
 				header << " (#{type})" if type
 				header << " Readable"  if read
 				header << " Writable"  if write
@@ -246,7 +250,12 @@ class Metasploit3 < Msf::Auxiliary
 						tbl << [fa || 'Unknown', fname, tcr, tac, twr, tch, sz]
 					end
 				end
+
 				print_good(tbl.to_s)
+				unless tbl.rows.empty?
+					p = store_loot('smb.shares', 'text/csv', ip, tbl.to_csv)
+					print_good("#{x} info saved in: #{p.to_s}")
+				end
 			end
 		end
 	end
@@ -280,12 +289,13 @@ class Metasploit3 < Msf::Auxiliary
 				   ::Rex::Proto::SMB::Exceptions::ErrorCode => e
 				print_error(e.message)
 				return if e.message =~ /STATUS_ACCESS_DENIED/
-			rescue ::Rex::ConnectionError,Errno::ECONNRESET,
+			rescue Errno::ECONNRESET,
 				   ::Rex::Proto::SMB::Exceptions::InvalidType,
 				   ::Rex::Proto::SMB::Exceptions::ReadPacket,
 				   ::Rex::Proto::SMB::Exceptions::InvalidCommand,
 				   ::Rex::Proto::SMB::Exceptions::InvalidWordCount,
 				   ::Rex::Proto::SMB::Exceptions::NoReply => e
+				print_error(e.message)
 				next if not shares.empty? and rport == 139 # no results, try again
 			rescue Errno::ENOPROTOOPT
 				select(nil, nil, nil, 5)
