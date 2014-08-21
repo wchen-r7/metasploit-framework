@@ -23,7 +23,7 @@ class Metasploit4 < Msf::Auxiliary
       'Author'        =>
         [
           '0a29406d9794e4f9b30b3c5d6702c708', # Original work
-          'sinn3r'                            # More code
+          'sinn3r'                            # Make myself liable to mistakes since I made significant changes
         ],
       'References'    =>
         [
