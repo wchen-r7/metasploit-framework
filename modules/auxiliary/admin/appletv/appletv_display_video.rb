@@ -55,10 +55,10 @@ class Metasploit4 < Msf::Auxiliary
 
 
   #
-  # Sends a media request to AppleTV. HttpClient isn't used because we actually need to keep
+  # Sends a video request to AppleTV. HttpClient isn't used because we actually need to keep
   # the connection alive so that the video can keep playing.
   #
-  def send_media_request(opts)
+  def send_video_request(opts)
     begin
       http = Rex::Proto::Http::Client.new(
         rhost,
@@ -121,8 +121,8 @@ class Metasploit4 < Msf::Auxiliary
 
     # The connection has to stay alive but we don't have to stare at the screen and
     # wait for it to finish.
-    framework.threads.spawn("SendMediaRequest", false) {
-      send_media_request(opts)
+    framework.threads.spawn("AppleTvVideoRequest", false) {
+      send_video_request(opts)
     }
   end
 
@@ -141,7 +141,7 @@ class Metasploit4 < Msf::Auxiliary
 
 
   def run
-    print_status("Media request sent. Duration set: #{datastore['TIME']}")
+    print_status("Video request sent. Duration set: #{datastore['TIME']} seconds")
     play_video_uri
   end
 
