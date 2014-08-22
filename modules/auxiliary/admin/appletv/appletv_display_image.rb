@@ -11,20 +11,23 @@ class Metasploit4 < Msf::Auxiliary
 
   def initialize(info = {})
     super(update_info(info,
-      'Name'        => 'Apple TV Image Remote Control',
-      'Description' => %q(
+      'Name'           => 'Apple TV Image Remote Control',
+      'Description'    => %q(
         This module will show an image on an AppleTV device for a period of time.
+        Some AppleTV devices are actually password-protected, in that case please
+        set the PASSWORD datastore option.
       ),
-      'Author'      =>
+      'Author'         =>
         [
           '0a29406d9794e4f9b30b3c5d6702c708', # Original work
           'sinn3r'                            # You can blame me for mistakes
         ],
-      'References'    =>
+      'References'     =>
         [
           ['URL', 'http://nto.github.io/AirPlay.html']
         ],
-      'License'     => MSF_LICENSE
+      'DefaultOptions' => { 'USERNAME' => 'AirPlay' },
+      'License'        => MSF_LICENSE
     ))
 
     register_options([
@@ -73,10 +76,9 @@ class Metasploit4 < Msf::Auxiliary
 
       req = http.request_raw(opts)
       res = http.send_recv(req)
+
       sleep(datastore['TIME']) if res.code == 200
       http.close
-    rescue Rex::ConnectionRefused, Rex::ConnectionTimeout, Rex::HostUnreachable => e
-      fail_with(Failure::Unreachable, e.message)
     ensure
       cleanup
     end

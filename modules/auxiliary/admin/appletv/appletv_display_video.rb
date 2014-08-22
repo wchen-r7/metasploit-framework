@@ -12,24 +12,26 @@ class Metasploit4 < Msf::Auxiliary
 
   def initialize(info = {})
     super(update_info(info,
-      'Name'          => 'Apple TV Video Remote Control',
-      'Description'   => %q(
+      'Name'           => 'Apple TV Video Remote Control',
+      'Description'    => %q(
         This module plays a video on an AppleTV device. Note that AppleTV can be somewhat picky
         about the server that hosts the video, here are the ones tested: default IIS. default
         Apache, Ruby httpd webrick's default MIME list might need to be updated depending on
         what media file you're playing. Python SimpleHTTPServer is not recommended. Also, if
-        you're playing a video, the URL must be an IP address.
+        you're playing a video, the URL must be an IP address. Some AppleTV devices are actually
+        password-protected, in that case please set the PASSWORD datastore option.
       ),
-      'Author'        =>
+      'Author'         =>
         [
           '0a29406d9794e4f9b30b3c5d6702c708', # Original work
           'sinn3r'                            # Make myself liable to mistakes since I made significant changes
         ],
-      'References'    =>
+      'References'     =>
         [
           ['URL', 'http://nto.github.io/AirPlay.html']
         ],
-      'License'       => MSF_LICENSE
+      'DefaultOptions' => { 'USERNAME' => 'AirPlay' },
+      'License'        => MSF_LICENSE
     ))
 
     register_options([
@@ -80,8 +82,6 @@ class Metasploit4 < Msf::Auxiliary
       res = http.send_recv(req)
       sleep(datastore['TIME']) if res.code == 200
       http.close
-    rescue Rex::ConnectionRefused, Rex::ConnectionTimeout, Rex::HostUnreachable => e
-      fail_with(Failure::Unreachable, e.message)
     ensure
       cleanup
     end
