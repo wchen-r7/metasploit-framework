@@ -24,10 +24,11 @@ The mailing list archives are available from:
 
 Installing
 --
-Generally, you should use the installer which contains all dependencies
-and will get you up and running with a few clicks. See the [Dev
-Environment Setup][wiki-devenv] if you'd like to deal with dependencies
-on your own.
+
+Generally, you should use [the free installer](https://www.metasploit.com/download)
+which contains all dependencies and will get you up and running with a
+few clicks. See the [Dev Environment Setup](http://r-7.co/MSF-DEV) if
+you'd like to deal with dependencies on your own.
 
 Using Metasploit
 --
@@ -47,7 +48,7 @@ pull request. For slightly more info, see
 [Contributing](https://github.com/rapid7/metasploit-framework/blob/master/CONTRIBUTING.md).
 
 
-[wiki-devenv]: https://github.com/rapid7/metasploit-framework/wiki/Metasploit-Development-Environment "Metasploit Development Environment Setup"
+[wiki-devenv]: https://github.com/rapid7/metasploit-framework/wiki/Setting-Up-a-Metasploit-Development-Environment "Metasploit Development Environment Setup"
 [wiki-start]: https://github.com/rapid7/metasploit-framework/wiki/ "Metasploit Wiki"
 [wiki-usage]: https://github.com/rapid7/metasploit-framework/wiki/Using-Metasploit "Using Metasploit"
 [unleashed]: http://www.offensive-security.com/metasploit-unleashed/ "Metasploit Unleashed"

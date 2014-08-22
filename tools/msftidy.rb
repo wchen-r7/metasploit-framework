@@ -1,411 +1,610 @@
 #!/usr/bin/env ruby
+# -*- coding: binary -*-
 #
 # Check (recursively) for style compliance violations and other
 # tree inconsistencies.
 #
-# by jduck and friends
+# by jduck, todb, and friends
 #
+require 'fileutils'
+require 'find'
+require 'time'
 
 CHECK_OLD_RUBIES = !!ENV['MSF_CHECK_OLD_RUBIES']
+SUPPRESS_INFO_MESSAGES = !!ENV['MSF_SUPPRESS_INFO_MESSAGES']
 
 if CHECK_OLD_RUBIES
-	require 'rvm'
-	warn "This is going to take a while, depending on the number of Rubies you have installed."
+  require 'rvm'
+  warn "This is going to take a while, depending on the number of Rubies you have installed."
 end
 
 class String
-	def red
-		"\e[1;31;40m#{self}\e[0m"
-	end
+  def red
+    "\e[1;31;40m#{self}\e[0m"
+  end
 
-	def yellow
-		"\e[1;33;40m#{self}\e[0m"
-	end
+  def yellow
+    "\e[1;33;40m#{self}\e[0m"
+  end
 
-	def ascii_only?
-		self =~ Regexp.new('[\x00-\x08\x0b\x0c\x0e-\x19\x7f-\xff]', nil, 'n') ? false : true
-	end
+  def green
+    "\e[1;32;40m#{self}\e[0m"
+  end
+
+  def cyan
+    "\e[1;36;40m#{self}\e[0m"
+  end
+
+  def ascii_only?
+    self =~ Regexp.new('[\x00-\x08\x0b\x0c\x0e-\x19\x7f-\xff]', nil, 'n') ? false : true
+  end
 end
 
 class Msftidy
 
-	LONG_LINE_LENGTH = 200 # From 100 to 200 which is stupidly long
+  # Status codes
+  OK       = 0x00
+  WARNINGS = 0x10
+  ERRORS   = 0x20
 
-	def initialize(source_file)
-		@source  = load_file(source_file)
-		@name    = source_file
-	end
+  attr_reader :full_filepath, :source, :stat, :name, :status
 
-	public
+  def initialize(source_file)
+    @full_filepath = source_file
+    @source  = load_file(source_file)
+    @status  = OK
+    @name    = File.basename(source_file)
+  end
 
-	##
-	#
-	# The following two functions only print what you throw at them,
-	# with the option of displying the line number.  error() is meant
-	# for mistakes that might actually break something.
-	#
-	##
+  public
 
-	def warn(txt, line=0)
-		line_msg = (line>0) ? ":#{line.to_s}" : ''
-		puts "#{@name}#{line_msg} - [#{'WARNING'.yellow}] #{txt}"
-	end
+  #
+  # Display a warning message, given some text and a number. Warnings
+  # are usually style issues that may be okay for people who aren't core
+  # Framework developers.
+  #
+  # @return status [Integer] Returns WARNINGS unless we already have an
+  # error.
+  def warn(txt, line=0) line_msg = (line>0) ? ":#{line}" : ''
+    puts "#{@full_filepath}#{line_msg} - [#{'WARNING'.yellow}] #{cleanup_text(txt)}"
+    @status == ERRORS ? @status = ERRORS : @status = WARNINGS
+  end
 
-	def error(txt, line=0)
-		line_msg = (line>0) ? ":#{line.to_s}" : ''
-		puts "#{@name}#{line_msg} - [#{'ERROR'.red}] #{txt}"
-	end
+  #
+  # Display an error message, given some text and a number. Errors
+  # can break things or are so egregiously bad, style-wise, that they
+  # really ought to be fixed.
+  #
+  # @return status [Integer] Returns ERRORS
+  def error(txt, line=0)
+    line_msg = (line>0) ? ":#{line}" : ''
+    puts "#{@full_filepath}#{line_msg} - [#{'ERROR'.red}] #{cleanup_text(txt)}"
+    @status = ERRORS
+  end
+
+  # Currently unused, but some day msftidy will fix errors for you.
+  def fixed(txt, line=0)
+    line_msg = (line>0) ? ":#{line}" : ''
+    puts "#{@full_filepath}#{line_msg} - [#{'FIXED'.green}] #{cleanup_text(txt)}"
+  end
+
+  #
+  # Display an info message. Info messages do not alter the exit status.
+  #
+  def info(txt, line=0)
+    return if SUPPRESS_INFO_MESSAGES
+    line_msg = (line>0) ? ":#{line}" : ''
+    puts "#{@full_filepath}#{line_msg} - [#{'INFO'.cyan}] #{cleanup_text(txt)}"
+  end
+
+  ##
+  #
+  # The functions below are actually the ones checking the source code
+  #
+  ##
+
+  def check_mode
+    unless (@stat.mode & 0111).zero?
+      warn("Module should not be marked executable")
+    end
+  end
+
+  def check_shebang
+    if @source.lines.first =~ /^#!/
+      warn("Module should not have a #! line")
+    end
+  end
+
+  # Updated this check to see if Nokogiri::XML.parse is being called
+  # specifically. The main reason for this concern is that some versions
+  # of libxml2 are still vulnerable to XXE attacks. REXML is safer (and
+  # slower) since it's pure ruby. Unfortunately, there is no pure Ruby
+  # HTML parser (except Hpricot which is abandonware) -- easy checks
+  # can avoid Nokogiri (most modules use regex anyway), but more complex
+  # checks tends to require Nokogiri for HTML element and value parsing.
+  def check_nokogiri
+    msg = "Using Nokogiri in modules can be risky, use REXML instead."
+    has_nokogiri = false
+    has_nokogiri_xml_parser = false
+    @source.each_line do |line|
+      if has_nokogiri
+        if line =~ /Nokogiri::XML\.parse/ or line =~ /Nokogiri::XML::Reader/
+          has_nokogiri_xml_parser = true
+          break
+        end
+      else
+        has_nokogiri = line_has_require?(line, 'nokogiri')
+      end
+    end
+    error(msg) if has_nokogiri_xml_parser
+  end
+
+  def check_ref_identifiers
+    in_super = false
+    in_refs  = false
+
+    @source.each_line do |line|
+      if !in_super and line =~ /\s+super\(/
+        in_super = true
+      elsif in_super and line =~ /[[:space:]]*def \w+[\(\w+\)]*/
+        in_super = false
+        break
+      end
+
+      if in_super and line =~ /["']References["'][[:space:]]*=>/
+        in_refs = true
+      elsif in_super and in_refs and line =~ /^[[:space:]]+\],*/m
+        break
+      elsif in_super and in_refs and line =~ /[^#]+\[[[:space:]]*['"](.+)['"][[:space:]]*,[[:space:]]*['"](.+)['"][[:space:]]*\]/
+        identifier = $1.strip.upcase
+        value      = $2.strip
+
+        case identifier
+        when 'CVE'
+          warn("Invalid CVE format: '#{value}'") if value !~ /^\d{4}\-\d{4}$/
+        when 'OSVDB'
+          warn("Invalid OSVDB format: '#{value}'") if value !~ /^\d+$/
+        when 'BID'
+          warn("Invalid BID format: '#{value}'") if value !~ /^\d+$/
+        when 'MSB'
+          warn("Invalid MSB format: '#{value}'") if value !~ /^MS\d+\-\d+$/
+        when 'MIL'
+          warn("milw0rm references are no longer supported.")
+        when 'EDB'
+          warn("Invalid EDB reference") if value !~ /^\d+$/
+        when 'WVE'
+          warn("Invalid WVE reference") if value !~ /^\d+\-\d+$/
+        when 'US-CERT-VU'
+          warn("Invalid US-CERT-VU reference") if value !~ /^\d+$/
+        when 'ZDI'
+          warn("Invalid ZDI reference") if value !~ /^\d{2}-\d{3}$/
+        when 'URL'
+          if value =~ /^http:\/\/www\.osvdb\.org/
+            warn("Please use 'OSVDB' for '#{value}'")
+          elsif value =~ /^http:\/\/cvedetails\.com\/cve/
+            warn("Please use 'CVE' for '#{value}'")
+          elsif value =~ /^http:\/\/www\.securityfocus\.com\/bid\//
+            warn("Please use 'BID' for '#{value}'")
+          elsif value =~ /^http:\/\/www\.microsoft\.com\/technet\/security\/bulletin\//
+            warn("Please use 'MSB' for '#{value}'")
+          elsif value =~ /^http:\/\/www\.exploit\-db\.com\/exploits\//
+            warn("Please use 'EDB' for '#{value}'")
+          elsif value =~ /^http:\/\/www\.wirelessve\.org\/entries\/show\/WVE\-/
+            warn("Please use 'WVE' for '#{value}'")
+          elsif value =~ /^http:\/\/www\.kb\.cert\.org\/vuls\/id\//
+            warn("Please use 'US-CERT-VU' for '#{value}'")
+          end
+        end
+      end
+    end
+  end
+
+  # See if 'require "rubygems"' or equivalent is used, and
+  # warn if so.  Since Ruby 1.9 this has not been necessary and
+  # the framework only suports 1.9+
+  def check_rubygems
+    @source.each_line do |line|
+      if line_has_require?(line, 'rubygems')
+        warn("Explicitly requiring/loading rubygems is not necessary")
+        break
+      end
+    end
+  end
+
+  # Does the given line contain a require/load of the specified library?
+  def line_has_require?(line, lib)
+    line =~ /^\s*(require|load)\s+['"]#{lib}['"]/
+  end
+
+  def check_snake_case_filename
+    sep = File::SEPARATOR
+    good_name = Regexp.new "^[a-z0-9_#{sep}]+\.rb$"
+    unless @name =~ good_name
+      warn "Filenames should be alphanum and snake case."
+    end
+  end
+
+  def check_comment_splat
+    if @source =~ /^# This file is part of the Metasploit Framework and may be subject to/
+      warn("Module contains old license comment, use tools/dev/resplat.rb <filename>.")
+    end
+  end
+
+  def check_old_keywords
+    max_count = 10
+    counter   = 0
+    if @source =~ /^##/
+      @source.each_line do |line|
+        # If exists, the $Id$ keyword should appear at the top of the code.
+        # If not (within the first 10 lines), then we assume there's no
+        # $Id$, and then bail.
+        break if counter >= max_count
+
+        if line =~ /^#[[:space:]]*\$Id\$/i
+          warn("Keyword $Id$ is no longer needed.")
+          break
+        end
+
+        counter += 1
+      end
+    end
+
+    if @source =~ /["']Version["'][[:space:]]*=>[[:space:]]*['"]\$Revision\$['"]/
+      warn("Keyword $Revision$ is no longer needed.")
+    end
+  end
+
+  def check_verbose_option
+    if @source =~ /Opt(Bool|String).new\([[:space:]]*('|")VERBOSE('|")[[:space:]]*,[[:space:]]*\[[[:space:]]*/
+      warn("VERBOSE Option is already part of advanced settings, no need to add it manually.")
+    end
+  end
+
+  def check_badchars
+    badchars = %Q|&<=>|
+
+    in_super   = false
+    in_author  = false
+
+    @source.each_line do |line|
+      #
+      # Mark our "super" code block
+      #
+      if !in_super and line =~ /\s+super\(/
+        in_super = true
+      elsif in_super and line =~ /[[:space:]]*def \w+[\(\w+\)]*/
+        in_super = false
+        break
+      end
+
+      #
+      # While in super() code block
+      #
+      if in_super and line =~ /["']Name["'][[:space:]]*=>[[:space:]]*['|"](.+)['|"]/
+        # Now we're checking the module titlee
+        mod_title = $1
+        mod_title.each_char do |c|
+          if badchars.include?(c)
+            error("'#{c}' is a bad character in module title.")
+          end
+        end
+
+        if not mod_title.ascii_only?
+          error("Please avoid unicode or non-printable characters in module title.")
+        end
+
+        # Since we're looking at the module title, this line clearly cannot be
+        # the author block, so no point to run more code below.
+        next
+      end
+
+      #
+      # Mark our 'Author' block
+      #
+      if in_super and !in_author and line =~ /["']Author["'][[:space:]]*=>/
+        in_author = true
+      elsif in_super and in_author and line =~ /\],*\n/ or line =~ /['"][[:print:]]*['"][[:space:]]*=>/
+        in_author = false
+      end
 
 
-	##
-	#
-	# The functions below are actually the ones checking the source code
-	#
-	##
+      #
+      # While in 'Author' block, check for Twitter handles
+      #
+      if in_super and in_author
+        if line =~ /Author/
+          author_name = line.scan(/\[[[:space:]]*['"](.+)['"]/).flatten[-1] || ''
+        else
+          author_name = line.scan(/['"](.+)['"]/).flatten[-1] || ''
+        end
 
-	def check_ref_identifiers
-		in_super = false
-		in_refs  = false
+        if author_name =~ /^@.+$/
+          error("No Twitter handles, please. Try leaving it in a comment instead.")
+        end
 
-		@source.each_line do |line|
-			if !in_super and line =~ /[\n\t]+super\(/
-				in_super = true
-			elsif in_super and line =~ /[[:space:]]*def \w+[\(\w+\)]*/
-				in_super = false
-				break
-			end
+        if not author_name.ascii_only?
+          error("Please avoid unicode or non-printable characters in Author")
+        end
+      end
+    end
+  end
 
-			if in_super and line =~ /'References'[[:space:]]*=>/
-				in_refs = true
-			elsif in_super and in_refs and line =~ /^[[:space:]]+\],*/m
-				break
-			elsif in_super and in_refs and line =~ /[^#]+\[[[:space:]]*['"](.+)['"][[:space:]]*,[[:space:]]*['"](.+)['"][[:space:]]*\]/
-				identifier = $1.strip.upcase
-				value      = $2.strip
+  def check_extname
+    if File.extname(@name) != '.rb'
+      error("Module should be a '.rb' file, or it won't load.")
+    end
+  end
 
-				case identifier
-				when 'CVE'
-					warn("Invalid CVE format: '#{value}'") if value !~ /^\d{4}\-\d{4}$/
-				when 'OSVDB'
-					warn("Invalid OSVDB format: '#{value}'") if value !~ /^\d+$/
-				when 'BID'
-					warn("Invalid BID format: '#{value}'") if value !~ /^\d+$/
-				when 'MSB'
-					warn("Invalid MSB format: '#{value}'") if value !~ /^MS\d+\-\d+$/
-				when 'MIL'
-					warn("milw0rm references are no longer supported.")
-				when 'EDB'
-					warn("Invalid EDB reference") if value !~ /^\d+$/
-				when 'WVE'
-					warn("Invalid WVE reference") if value !~ /^\d+\-\d+$/
-				when 'US-CERT-VU'
-					warn("Invalid US-CERT-VU reference") if value !~ /^\d+$/
-				when 'URL'
-					if value =~ /^http:\/\/www\.osvdb\.org/
-						warn("Please use 'OSVDB' for '#{value}'")
-					elsif value =~ /^http:\/\/cvedetails\.com\/cve/
-						warn("Please use 'CVE' for '#{value}'")
-					elsif value =~ /^http:\/\/www\.securityfocus\.com\/bid\//
-						warn("Please use 'BID' for '#{value}'")
-					elsif value =~ /^http:\/\/www\.microsoft\.com\/technet\/security\/bulletin\//
-						warn("Please use 'MSB' for '#{value}'")
-					elsif value =~ /^http:\/\/www\.exploit\-db\.com\/exploits\//
-						warn("Please use 'EDB' for '#{value}'")
-					elsif value =~ /^http:\/\/www\.wirelessve\.org\/entries\/show\/WVE\-/
-						warn("Please use 'WVE' for '#{value}'")
-					elsif value =~ /^http:\/\/www\.kb\.cert\.org\/vuls\/id\//
-						warn("Please use 'US-CERT-VU' for '#{value}'")
-					end
-				end
-			end
-		end
-	end
+  def check_old_rubies
+    return true unless CHECK_OLD_RUBIES
+    return true unless Object.const_defined? :RVM
+    puts "Checking syntax for #{@name}."
+    rubies ||= RVM.list_strings
+    res = %x{rvm all do ruby -c #{@full_filepath}}.split("\n").select {|msg| msg =~ /Syntax OK/}
+    error("Fails alternate Ruby version check") if rubies.size != res.size
+  end
 
-	def check_old_keywords
-		max_count = 10
-		counter   = 0
-		if @source =~ /^##/
-			@source.each_line do |line|
-				# If exists, the $Id$ keyword should appear at the top of the code.
-				# If not (within the first 10 lines), then we assume there's no
-				# $Id$, and then bail.
-				break if counter >= max_count
+  def check_ranking
+    return if @source !~ / \< Msf::Exploit/
 
-				if line =~ /^#[[:space:]]*\$Id\$/i
-					warn("Keyword $Id$ is no longer needed.")
-					break
-				end
+    available_ranks = [
+      'ManualRanking',
+      'LowRanking',
+      'AverageRanking',
+      'NormalRanking',
+      'GoodRanking',
+      'GreatRanking',
+      'ExcellentRanking'
+    ]
 
-				counter += 1
-			end
-		end
+    if @source =~ /Rank \= (\w+)/
+      if not available_ranks.include?($1)
+        error("Invalid ranking. You have '#{$1}'")
+      end
+    end
+  end
 
-		if @source =~ /'Version'[[:space:]]*=>[[:space:]]*['"]\$Revision\$['"]/
-			warn("Keyword $Revision$ is no longer needed.")
-		end
-	end
+  def check_disclosure_date
+    return if @source =~ /Generic Payload Handler/
 
-	def check_verbose_option
-		if @source =~ /Opt(Bool|String).new\([[:space:]]*('|")VERBOSE('|")[[:space:]]*,[[:space:]]*\[[[:space:]]*/
-			warn("VERBOSE Option is already part of advanced settings, no need to add it manually.")
-		end
-	end
+    # Check disclosure date format
+    if @source =~ /["']DisclosureDate["'].*\=\>[\x0d\x20]*['\"](.+)['\"]/
+      d = $1  #Captured date
+      # Flag if overall format is wrong
+      if d =~ /^... \d{1,2}\,* \d{4}/
+        # Flag if month format is wrong
+        m = d.split[0]
+        months = [
+          'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+        ]
 
-	def check_badchars
-		badchars = %Q|&<=>|
+        error('Incorrect disclosure month format') if months.index(m).nil?
+      else
+        error('Incorrect disclosure date format')
+      end
+    else
+      error('Exploit is missing a disclosure date') if @source =~ / \< Msf::Exploit/
+    end
+  end
 
-		in_super   = false
-		in_author  = false
+  def check_title_casing
+    whitelist = %w{
+      a an and as at avserve callmenum configdir connect debug docbase dtspcd
+      execve file for from getinfo goaway gsad hetro historysearch htpasswd
+      ibstat id in inetd iseemedia jhot libxslt lmgrd lnk load main map
+      migrate mimencode multisort name net netcat nodeid ntpd nttrans of
+      on onreadystatechange or ovutil path pbot pfilez pgpass pingstr pls
+      popsubfolders prescan readvar relfile rev rexec rlogin rsh rsyslog sa
+      sadmind say sblistpack spamd sreplace tagprinter the to twikidraw udev
+      uplay user username via welcome with ypupdated zsudo
+    }
 
-		@source.each_line do |line|
-			#
-			# Mark our "super" code block
-			#
-			if !in_super and line =~ /[\n\t]+super\(/
-				in_super = true
-			elsif in_super and line =~ /[[:space:]]*def \w+[\(\w+\)]*/
-				in_super = false
-				break
-			end
+    if @source =~ /["']Name["'][[:space:]]*=>[[:space:]]*['"](.+)['"],*$/
+      words = $1.split
+      words.each do |word|
+        if whitelist.include?(word)
+          next
+        elsif word =~ /^[a-z]+$/
+          warn("Suspect capitalization in module title: '#{word}'")
+        end
+      end
+    end
+  end
 
-			#
-			# While in super() code block
-			#
-			if in_super and line =~ /'Name'[[:space:]]*=>[[:space:]]*['|"](.+)['|"]/
-				# Now we're checking the module titlee
-				mod_title = $1
-				mod_title.each_char do |c|
-					if badchars.include?(c)
-						error("'#{c}' is a bad character in module title.")
-					end
-				end
+  def check_bad_terms
+    # "Stack overflow" vs "Stack buffer overflow" - See explanation:
+    # http://blogs.technet.com/b/srd/archive/2009/01/28/stack-overflow-stack-exhaustion-not-the-same-as-stack-buffer-overflow.aspx
+    if @source =~ /class Metasploit\d < Msf::Exploit::Remote/ and @source.gsub("\n", "") =~ /stack[[:space:]]+overflow/i
+      warn('Contains "stack overflow" You mean "stack buffer overflow"?')
+    elsif @source =~ /class Metasploit\d < Msf::Auxiliary/ and @source.gsub("\n", "") =~ /stack[[:space:]]+overflow/i
+      warn('Contains "stack overflow" You mean "stack exhaustion"?')
+    end
+  end
 
-				if not mod_title.ascii_only?
-					error("Please avoid unicode or non-printable characters in module title.")
-				end
+  def check_function_basics
+    functions = @source.scan(/def (\w+)\(*(.+)\)*/)
 
-				# Since we're looking at the module title, this line clearly cannot be
-				# the author block, so no point to run more code below.
-				next
-			end
+    functions.each do |func_name, args|
+      # Check argument length
+      args_length = args.split(",").length
+      warn("Poorly designed argument list in '#{func_name}()'. Try a hash.") if args_length > 6
+    end
+  end
 
-			#
-			# Mark our 'Author' block
-			#
-			if in_super and !in_author and line =~ /'Author'[[:space:]]*=>/
-				in_author = true
-			elsif in_super and in_author and line =~ /\],*\n/ or line =~ /['"][[:print:]]*['"][[:space:]]*=>/
-				in_author = false
-			end
+  def check_lines
+    url_ok     = true
+    no_stdio   = true
+    in_comment = false
+    in_literal = false
+    src_ended  = false
+    idx        = 0
 
+    @source.each_line { |ln|
+      idx += 1
 
-			#
-			# While in 'Author' block, check for Twitter handles
-			#
-			if in_super and in_author
-				if line =~ /Author/
-					author_name = line.scan(/\[[[:space:]]*['"](.+)['"]/).flatten[-1] || ''
-				else
-					author_name = line.scan(/['"](.+)['"]/).flatten[-1] || ''
-				end
+      # block comment awareness
+      if ln =~ /^=end$/
+        in_comment = false
+        next
+      end
+      in_comment = true if ln =~ /^=begin$/
+      next if in_comment
 
-				if author_name =~ /^@.+$/
-					error("No Twitter handles, please. Try leaving it in a comment instead.")
-				end
+      # block string awareness (ignore indentation in these)
+      in_literal = false if ln =~ /^EOS$/
+      next if in_literal
+      in_literal = true if ln =~ /\<\<-EOS$/
 
-				if not author_name.ascii_only?
-					error("Please avoid unicode or non-printable characters in Author")
-				end
-			end
-		end
-	end
+      # ignore stuff after an __END__ line
+      src_ended = true if ln =~ /^__END__$/
+      next if src_ended
 
-	def check_extname
-		if File.extname(@name) != '.rb'
-			error("Module should be a '.rb' file, or it won't load.")
-		end
-	end
+      if ln =~ /[\x00-\x08\x0b\x0c\x0e-\x19\x7f-\xff]/
+        error("Unicode detected: #{ln.inspect}", idx)
+      end
 
-	def test_old_rubies(f_rel)
-		return true unless CHECK_OLD_RUBIES
-		return true unless Object.const_defined? :RVM
-		puts "Checking syntax for #{f_rel}."
-		rubies ||= RVM.list_strings
-		res = %x{rvm all do ruby -c #{f_rel}}.split("\n").select {|msg| msg =~ /Syntax OK/}
-		error("Fails alternate Ruby version check") if rubies.size != res.size
-	end
+      if ln =~ /[ \t]$/
+        warn("Spaces at EOL", idx)
+      end
 
-	def check_ranking
-		return if @source !~ / \< Msf::Exploit/
+      # Check for mixed tab/spaces. Upgrade this to an error() soon.
+      if (ln.length > 1) and (ln =~ /^([\t ]*)/) and ($1.match(/\x20\x09|\x09\x20/))
+        warn("Space-Tab mixed indent: #{ln.inspect}", idx)
+      end
 
-		available_ranks = [
-			'ManualRanking',
-			'LowRanking',
-			'AverageRanking',
-			'NormalRanking',
-			'GoodRanking',
-			'GreatRanking',
-			'ExcellentRanking'
-		]
+      # Check for tabs. Upgrade this to an error() soon.
+      if (ln.length > 1) and (ln =~ /^\x09/)
+        warn("Tabbed indent: #{ln.inspect}", idx)
+      end
 
-		if @source =~ /Rank \= (\w+)/
-			if not available_ranks.include?($1)
-				error("Invalid ranking. You have '#{$1}'")
-			end
-		end
-	end
+      if ln =~ /\r$/
+        warn("Carriage return EOL", idx)
+      end
 
-	def check_disclosure_date
-		return if @source =~ /Generic Payload Handler/ or @source !~ / \< Msf::Exploit/
+      url_ok = false if ln =~ /\.com\/projects\/Framework/
+      if ln =~ /File\.open/ and ln =~ /[\"\'][arw]/
+        if not ln =~ /[\"\'][wra]\+?b\+?[\"\']/
+          warn("File.open without binary mode", idx)
+        end
+      end
 
-		# Check disclosure date format
-		if @source =~ /'DisclosureDate'.*\=\>[\x0d\x20]*['\"](.+)['\"]/
-			d = $1  #Captured date
-			# Flag if overall format is wrong
-			if d =~ /^... \d{1,2}\,* \d{4}/
-				# Flag if month format is wrong
-				m = d.split[0]
-				months = [
-					'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-					'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-				]
+      if ln =~/^[ \t]*load[ \t]+[\x22\x27]/
+        error("Loading (not requiring) a file: #{ln.inspect}", idx)
+      end
 
-				error('Incorrect disclosure month format') if months.index(m).nil?
-			else
-				error('Incorrect disclosure date format')
-			end
-		else
-			error('Exploit is missing a disclosure date')
-		end
-	end
+      # The rest of these only count if it's not a comment line
+      next if ln =~ /[[:space:]]*#/
 
-	def check_title_casing
-		if @source =~ /'Name'[[:space:]]*=>[[:space:]]*['"](.+)['"],*$/
-			words = $1.split
-			words.each do |word|
-				if %w{and or the for to in of as with a an on at via}.include?(word)
-					next
-				elsif %w{pbot}.include?(word)
-				elsif word =~ /^[a-z]+$/
-					warn("Improper capitalization in module title: '#{word}'")
-				end
-			end
-		end
-	end
+      if ln =~ /\$std(?:out|err)/i or ln =~ /[[:space:]]puts/
+        next if ln =~ /^[\s]*["][^"]+\$std(?:out|err)/
+        no_stdio = false
+        error("Writes to stdout", idx)
+      end
 
-	def check_bad_terms
-		# "Stack overflow" vs "Stack buffer overflow" - See explanation:
-		# http://blogs.technet.com/b/srd/archive/2009/01/28/stack-overflow-stack-exhaustion-not-the-same-as-stack-buffer-overflow.aspx
-		if @source =~ /class Metasploit\d < Msf::Exploit::Remote/ and @source.gsub("\n", "") =~ /stack[[:space:]]+overflow/i
-			warn('Contains "stack overflow" You mean "stack buffer overflow"?')
-		elsif @source =~ /class Metasploit\d < Msf::Auxiliary/ and @source.gsub("\n", "") =~ /stack[[:space:]]+overflow/i
-			warn('Contains "stack overflow" You mean "stack exhaustion"?')
-		end
-	end
+      # You should not change datastore in code. For reasons. See
+      # RM#8498 for discussion, starting at comment #16:
+      #
+      # https://dev.metasploit.com/redmine/issues/8498#note-16
+      if ln =~ /(?<!\.)datastore\[["'][^"']+["']\]\s*=(?![=~>])/
+        info("datastore is modified in code: #{ln}", idx)
+      end
 
-	def check_function_basics
-		functions = @source.scan(/def (\w+)\(*(.+)\)*/)
+      # do not read Set-Cookie header (ignore commented lines)
+      if ln =~ /^(?!\s*#).+\[['"]Set-Cookie['"]\]/i
+        warn("Do not read Set-Cookie header directly, use res.get_cookies instead: #{ln}", idx)
+      end
 
-		functions.each do |func_name, args|
-			# Check argument length
-			args_length = args.split(",").length
-			warn("Poorly designed argument list in '#{func_name}()'. Try a hash.") if args_length > 6
-		end
-	end
+      # Auxiliary modules do not have a rank attribute
+      if ln =~ /^\s*Rank\s*=\s*/ and @source =~ /<\sMsf::Auxiliary/
+        warn("Auxiliary modules have no 'Rank': #{ln}", idx)
+      end
+    }
+  end
 
-	def check_lines
-		url_ok     = true
-		no_stdio   = true
-		in_comment = false
-		in_literal = false
-		src_ended  = false
-		idx        = 0
+  def check_vuln_codes
+    checkcode = @source.scan(/(Exploit::)?CheckCode::(\w+)/).flatten[1]
+    if checkcode and checkcode !~ /^Unknown|Safe|Detected|Appears|Vulnerable|Unsupported$/
+      error("Unrecognized checkcode: #{checkcode}")
+    end
+  end
 
-		@source.each_line { |ln|
-			idx += 1
+  def check_vars_get
+    test = @source.scan(/send_request_cgi\s*\(\s*\{?\s*['"]uri['"]\s*=>\s*[^=})]*?\?[^,})]+/im)
+    unless test.empty?
+      test.each { |item|
+        info("Please use vars_get in send_request_cgi: #{item}")
+      }
+    end
+  end
 
-			# block comment awareness
-			if ln =~ /^=end$/
-				in_comment = false
-				next
-			end
-			in_comment = true if ln =~ /^=begin$/
-			next if in_comment
+  def check_newline_eof
+    if @source !~ /(?:\r\n|\n)\z/m
+      info('Please add a newline at the end of the file')
+    end
+  end
 
-			# block string awareness (ignore indentation in these)
-			in_literal = false if ln =~ /^EOS$/
-			next if in_literal
-			in_literal = true if ln =~ /\<\<-EOS$/
+  def check_sock_get
+    if @source =~ /\s+sock\.get(\s*|\(|\d+\s*|\d+\s*,\d+\s*)/m && @source !~ /sock\.get_once/
+      info('Please use sock.get_once instead of sock.get')
+    end
+  end
 
-			# ignore stuff after an __END__ line
-			src_ended = true if ln =~ /^__END__$/
-			next if src_ended
+  def check_udp_sock_get
+    if @source =~ /udp_sock\.get/m && @source !~ /udp_sock\.get\([a-zA-Z0-9]+/
+      info('Please specify a timeout to udp_sock.get')
+    end
+  end
 
-			if ln =~ /[\x00-\x08\x0b\x0c\x0e-\x19\x7f-\xff]/
-				error("Unicode detected: #{ln.inspect}", idx)
-			end
+  private
 
-			if (ln.length > LONG_LINE_LENGTH)
-				warn("Line exceeding #{LONG_LINE_LENGTH.to_s} bytes", idx)
-			end
+  def load_file(file)
+    f = open(file, 'rb')
+    @stat = f.stat
+    buf = f.read(@stat.size)
+    f.close
+    return buf
+  end
 
-			if ln =~ /[ \t]$/
-				warn("Spaces at EOL", idx)
-			end
-
-			if (ln.length > 1) and (ln =~ /^([\t ]*)/) and ($1.include?(' '))
-				warn("Bad indent: #{ln.inspect}", idx)
-			end
-
-			if ln =~ /\r$/
-				warn("Carriage return EOL", idx)
-			end
-
-			url_ok = false if ln =~ /\.com\/projects\/Framework/
-			if ln =~ /File\.open/ and ln =~ /[\"\'][arw]/
-				if not ln =~ /[\"\'][wra]\+?b\+?[\"\']/
-					warn("File.open without binary mode", idx)
-				end
-			end
-
-			if ln =~/^[ \t]*load[ \t]+[\x22\x27]/
-				error("Loading (not requiring) a file: #{ln.inspect}", idx)
-			end
-
-			# The rest of these only count if it's not a comment line
-			next if ln =~ /[[:space:]]*#/
-
-			if ln =~ /\$std(?:out|err)/i or ln =~ /[[:space:]]puts/
-				no_stdio = false
-				error("Writes to stdout", idx)
-			end
-		}
-	end
-
-	private
-
-	def load_file(file)
-		f = open(file, 'rb')
-		buf = f.read(f.stat.size)
-		f.close
-		return buf
-	end
+  def cleanup_text(txt)
+    # remove line breaks
+    txt = txt.gsub(/[\r\n]/, ' ')
+    # replace multiple spaces by one space
+    txt.gsub(/\s{2,}/, ' ')
+  end
 end
 
-def run_checks(f_rel)
-	tidy = Msftidy.new(f_rel)
-	tidy.check_ref_identifiers
-	tidy.check_old_keywords
-	tidy.check_verbose_option
-	tidy.check_badchars
-	tidy.check_extname
-	tidy.test_old_rubies(f_rel)
-	tidy.check_ranking
-	tidy.check_disclosure_date
-	tidy.check_title_casing
-	tidy.check_bad_terms
-	tidy.check_function_basics
-	tidy.check_lines
+#
+# Run all the msftidy checks.
+#
+# @param full_filepath [String] The full file path to check
+# @return status [Integer] A status code suitable for use as an exit status
+def run_checks(full_filepath)
+  tidy = Msftidy.new(full_filepath)
+  tidy.check_mode
+  tidy.check_shebang
+  tidy.check_nokogiri
+  tidy.check_rubygems
+  tidy.check_ref_identifiers
+  tidy.check_old_keywords
+  tidy.check_verbose_option
+  tidy.check_badchars
+  tidy.check_extname
+  tidy.check_old_rubies
+  tidy.check_ranking
+  tidy.check_disclosure_date
+  tidy.check_title_casing
+  tidy.check_bad_terms
+  tidy.check_function_basics
+  tidy.check_lines
+  tidy.check_snake_case_filename
+  tidy.check_comment_splat
+  tidy.check_vuln_codes
+  tidy.check_vars_get
+  tidy.check_newline_eof
+  tidy.check_sock_get
+  tidy.check_udp_sock_get
+  return tidy
 end
 
 ##
@@ -416,38 +615,26 @@ end
 
 dirs = ARGV
 
+@exit_status = 0
+
 if dirs.length < 1
-	$stderr.puts "Usage: #{File.basename(__FILE__)} <directory or file>"
-	exit(1)
+  $stderr.puts "Usage: #{File.basename(__FILE__)} <directory or file>"
+  @exit_status = 1
+  exit(@exit_status)
 end
 
-dirs.each { |dir|
-	f = nil
-	old_dir = nil
+dirs.each do |dir|
+  begin
+    Find.find(dir) do |full_filepath|
+      next if full_filepath =~ /\.git[\x5c\x2f]/
+      next unless File.file? full_filepath
+      next unless full_filepath =~ /\.rb$/
+      msftidy = run_checks(full_filepath)
+      @exit_status = msftidy.status if (msftidy.status > @exit_status.to_i)
+    end
+  rescue Errno::ENOENT
+    $stderr.puts "#{File.basename(__FILE__)}: #{dir}: No such file or directory"
+  end
+end
 
-	if dir
-		if File.file?(dir)
-			# whoa, a single file!
-			f = File.basename(dir)
-			dir = File.dirname(dir)
-		end
-
-		old_dir = Dir.getwd
-		Dir.chdir(dir)
-		dparts = dir.split('/')
-	else
-		dparts = []
-	end
-
-	# Only one file?
-	if f
-		run_checks(f)
-	else
-		# Do a recursive check of the specified directory
-		Dir.glob('**/*.rb') { |f|
-			run_checks(f)
-		}
-	end
-
-	Dir.chdir(old_dir)
-}
+exit(@exit_status.to_i)
