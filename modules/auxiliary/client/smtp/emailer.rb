@@ -116,7 +116,7 @@ class Metasploit3 < Msf::Auxiliary
 
     tmp = Dir.tmpdir
 
-    datastore['MAILFROM'] = from
+    set_mailfrom(from)
 
     msg       = load_file(msg_file)
     email_sig = load_file(sig_file)
@@ -203,7 +203,7 @@ class Metasploit3 < Msf::Auxiliary
 
       mime_msg.from = from
       mime_msg.to = email
-      datastore['MAILTO'] = email.strip
+      set_mailto(email.strip)
       mime_msg.subject = subject
 
       mime_msg.add_part(Rex::Text.encode_base64(email_msg_body, "\r\n"), type, "base64", "inline")
