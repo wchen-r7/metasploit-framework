@@ -22,7 +22,7 @@ arch_x86_64   = "x86_64";
 arch_ppc      = "ppc";
 arch_mipsle   = "mipsle";
 
-window.os_detect = {};
+var os_detect = {};
 
 /**
  * This can reliably detect browser versions for IE and Firefox even in the
@@ -30,7 +30,7 @@ window.os_detect = {};
  * requires truthful navigator.appVersion and navigator.userAgent strings in
  * order to be accurate for more than just IE on Windows.
  **/
-window.os_detect.getVersion = function(){
+os_detect.getVersion = function(){
 	//Default values:
 	var os_name;
 	var os_flavor;
@@ -1121,7 +1121,7 @@ window.os_detect.getVersion = function(){
 	return { os_name:os_name, os_flavor:os_flavor, os_sp:os_sp, os_lang:os_lang, arch:arch, ua_name:ua_name, ua_version:ua_version };
 }; // function getVersion
 
-window.os_detect.searchVersion = function(needle, haystack) {
+os_detect.searchVersion = function(needle, haystack) {
 	var index = haystack.indexOf(needle);
 	var found_version;
 	if (index == -1) { return; }
@@ -1137,7 +1137,7 @@ window.os_detect.searchVersion = function(needle, haystack) {
 /*
  * Return -1 if a < b, 0 if a == b, 1 if a > b
  */
-window.ua_ver_cmp = function(ver_a, ver_b) {
+ua_ver_cmp = function(ver_a, ver_b) {
 	// shortcut the easy case
 	if (ver_a == ver_b) {
 		return 0;
@@ -1181,15 +1181,15 @@ window.ua_ver_cmp = function(ver_a, ver_b) {
 	return 0;
 };
 
-window.ua_ver_lt = function(a, b) {
+ua_ver_lt = function(a, b) {
 	if (-1 == this.ua_ver_cmp(a,b)) { return true; }
 	return false;
 };
-window.ua_ver_gt = function(a, b) {
+ua_ver_gt = function(a, b) {
 	if (1 == this.ua_ver_cmp(a,b)) { return true; }
 	return false;
 };
-window.ua_ver_eq = function(a, b) {
+ua_ver_eq = function(a, b) {
 	if (0 == this.ua_ver_cmp(a,b)) { return true; }
 	return false;
 };
