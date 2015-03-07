@@ -46,7 +46,7 @@ require 'msf/core/payload_generator'
 
     init_framework
 
-    @framework
+    @framework #test
   end
 
 
