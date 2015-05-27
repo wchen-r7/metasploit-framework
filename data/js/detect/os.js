@@ -850,6 +850,10 @@ os_detect.getVersion = function(){
 				// IE 8.0.7100.0, Windows 7 64-bit English
 			case "5816385":
 				// IE 8.0.7600.16385, Windows 7 English
+				os_name = "Windows 7";
+				os_sp = "SP0";
+				ua_version = "8.0";
+				break;
 			case "5816475":
 			case "5816762":
 				// IE 8.0.7600.16385, Windows 7 English
