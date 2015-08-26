@@ -5,25 +5,18 @@ module Metasploit
     module LoginScanner
 
       class PhpMyAdmin < HTTP
-        DEFAULT_PORT  = 4848
+        DEFAULT_PORT  = 80
+        LIKELY_PORTS = [ DEFAULT_PORT, 443 ]
         PRIVATE_TYPES = [ :password ]
-        LOGIN_STATUS = Metasploit::Model::Login::Status # shorter name
+        LOGIN_STATUS = Metasploit::Model::Login::Status
 
         # @!attribute php_my_admin
-        #   @return [String] cookie pma à mettre dans la prochaine requete
+        #   @return [String] cookie
         attr_accessor :php_my_admin
 
         # @!attribute token
-        #   @return [String] token requete
+        #   @return [String] token
         attr_accessor :token
-
-        # @!attribute pmaUser_1
-        #   @return [String] pmaUser-1 cookie a mettre dans la requete
-        attr_accessor :pmaUser_1
-
-        # @!attribute pmaPass_1
-        #   @return [String] pmaPass-1 cookie a mettre dans la requete
-        attr_accessor :pmaPass_1
 
         # (see Base#check_setup)
         def check_setup
@@ -31,41 +24,36 @@ module Metasploit
             res = send_request({'uri' => uri})
             return "Connection failed" if res.nil?
             if !([200, 302].include?(res.code))
-              return "Unexpected HTTP response code #{res.code} (is this really phpMyAdmin ?)"
+              return "Unexpected HTTP response code #{res.code} (is this really phpMyAdmin?)"
             end
-
           rescue ::EOFError, Errno::ETIMEDOUT, Rex::ConnectionError, ::Timeout::Error
             return "Unable to connect to target"
           end
 
-          true
+          false
+        end
+
+        def get_token(res)
+          @my_token ||= lambda {
+            tokens = res.body.match(/<input type="hidden" name="token" value="(\w+)"/)
+            token = (tokens.nil?) ? '' : tokens[-1]
+            return token
+          }.call
+        end
+
+        def get_cookie(res)
+          cookies = res.get_cookies.inspect
+          @my_cookie ||= lambda {
+            phpmyadmin_id = res.get_cookies.scan(/(phpMyAdmin=[a-z0-9]+;)/).flatten.first || ''
+          }.call
         end
 
         # Sends a HTTP request with Rex
-        #
-        # @param (see Rex::Proto::Http::Resquest#request_raw)
-        # @return [Rex::Proto::Http::Response] The HTTP response
         def send_request(opts)
-          cli = Rex::Proto::Http::Client.new(host, port, {'Msf' => framework, 'MsfExploit' => framework_module}, ssl, ssl_version, proxies)
-          configure_http_client(cli)
-          cli.connect
-          req = cli.request_raw(opts)
-          res = cli.send_recv(req)
+          res = super(opts)
 
-          # Found a cookie? Set it. We're going to need it.
-          if self.php_my_admin == '' && res && res.get_cookies =~ /(phpMyAdmin=[a-z0-9]+;)/i
-            self.php_my_admin = res.get_cookies.match(/ (phpMyAdmin=[a-z0-9]+;)/)[1]
-          end
-          if self.pmaPass_1 == '' && res && res.get_cookies =~ /(pmaPass-1=[a-zA-Z0-9%]+;)/i
-            self.pmaPass_1 = $1
-          end
-          if self.pmaUser_1 == '' && res && res.get_cookies =~ /(pmaUser-1=[a-zA-Z0-9%]+;)/i
-            self.pmaUser_1 = $1
-          end
-          if self.token == ''
-            tokens = res.body.match(/<input type="hidden" name="token" value="(\w+)"/)
-            self.token = (tokens.nil?) ? '' : tokens[-1]
-          end
+          self.php_my_admin = get_cookie(res)
+          self.token = get_token(res)
 
           res
         end
@@ -76,47 +64,58 @@ module Metasploit
         # @param credential [Metasploit::Framework::Credential] The credential object
         # @return [Rex::Proto::Http::Response] The HTTP auth response
         def do_login(username, password)
-          # on recupere les cookies/token
-          send_request({'uri' => "#{uri}index.php"})
-
-          data  = "pma_username=#{username}&"
-          data << "pma_password=#{password}&"
-          data << "token=#{self.token}"
-
           opts = {
             'uri'     => "#{uri}index.php",
             'method'  => 'POST',
-            'data'    => data,
-            'headers' => {
-              'Content-Type'   => 'application/x-www-form-urlencoded',
-              'Cookie'         => "#{self.pmaUser_1} #{self.php_my_admin}",
+            'vars_post' => {
+              'pma_username' => username,
+              'pma_password' => password,
+              'token' => self.token
             }
           }
 
           res = send_request(opts)
-          if is_logged_in
-            return {:status => LOGIN_STATUS::SUCCESSFUL, :proof => self.pmaPass_1}
-          end
+          status = is_logged_in(res) ? LOGIN_STATUS::SUCCESSFUL : LOGIN_STATUS::INCORRECT
 
-          return {:status => LOGIN_STATUS::INCORRECT, :proof => res.to_s}
-
+          { status: status , proof: res.body }
         end
 
+        def get_new_cookie_values(res)
+          php_my_admin = res.get_cookies.scan(/(phpMyAdmin=[a-z0-9]+);/).flatten.first || ''
+          pma_user = res.get_cookies.scan(/(pmaUser\-1=[a-z0-9\%]+);/i).flatten.first || ''
+          pma_pass = res.get_cookies.scan(/(pmaPass\-1=[a-z0-9\%]+);/i).flatten.first || ''
+          pma_iv   = res.get_cookies.scan(/(pma\_iv\-1=[a-z0-9\%]+);/i).flatten.first || ''
 
-        def is_logged_in
-          url_verif = "#{uri}index.php?token=#{self.token}"
+          new_cookie = [
+            php_my_admin,
+            'pma_lang=en',
+            'pma_collation_connection=utf8_unicode_ci',
+            pma_iv,
+            pma_user,
+            pma_pass
+            ] * '; '
 
-          cookies = "#{self.pmaPass_1} #{self.pmaUser_1} #{self.php_my_admin}"
+          new_cookie
+        end
 
-          res = send_request({
-            'uri'    => url_verif,
-             'headers' => {
-               'Content-Type'   => 'application/x-www-form-urlencoded',
-               'Cookie'  => cookies
-             }
-          })
+        def is_logged_in(res)
+          return false unless res.headers['Location']
 
-          return (res.body.include? 'Log out')
+          qs = res.headers['Location'].scan(/.+\?(.+)$/).flatten.first.split(/&/)
+          vars_get = {}
+          qs.each do |q|
+            name, value = q.split(/\=/)
+            vars_get[name] = value
+          end
+
+          new_cookie = get_new_cookie_values(res)
+
+          opts = {
+            'uri'      => "#{uri}index.php",
+            'vars_get' => {'token' => vars_get['token']},
+            'cookie'   => new_cookie
+          }
+          send_request(opts).body.include?('Log out')
         end
 
 
@@ -136,9 +135,8 @@ module Metasploit
           }
 
           self.php_my_admin = ''
-          self.pmaUser_1 = ''
-          self.pmaPass_1 = ''
           self.token = ''
+
           # Merge login result
           begin
             result_opts.merge!(do_login(credential.public, credential.private))

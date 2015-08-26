@@ -1,3 +1,5 @@
+#load "./lib/metasploit/framework/login_scanner/php_myadmin.rb"
+
 require 'msf/core'
 require 'metasploit/framework/login_scanner/php_myadmin'
 require 'metasploit/framework/credential_collection'
@@ -14,7 +16,9 @@ class Metasploit3 < Msf::Auxiliary
     super(update_info(info,
       'Name'           => 'phpMyAdmin Login Utility',
       'Description'    => %q{
-        This module attempts to authenticate to a phpMyAdmin interface
+        This module attempts to authenticate to a phpMyAdmin interface.
+        It currntly works against version 3.5.0 or newer. Tested versions include:
+        3.5.0, 4.0.10.10, and 4.4.14.
       },
       'Author'         =>
         [
@@ -134,9 +138,11 @@ class Metasploit3 < Msf::Auxiliary
 
   # Start here
   def run_host(ip)
-    scanneur = scanner(ip)
-    unless scanneur.check_setup
-      print_brute(:level => :error, :ip => ip, :msg => 'Target is not phpMyAdmin')
+    cli = scanner(ip)
+    msg = cli.check_setup
+
+    if msg
+      print_brute(:level => :error, :ip => ip, :msg => msg)
       return
     end
 
