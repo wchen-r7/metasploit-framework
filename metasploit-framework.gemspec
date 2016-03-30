@@ -93,7 +93,7 @@ Gem::Specification.new do |spec|
   spec.add_runtime_dependency 'octokit'
   spec.add_runtime_dependency 'redcarpet'
   # For Microsoft patch finding tool (msu_finder)
-  spec.add_runtime_dependency 'patch_finder', '1.0.2'
+  spec.add_runtime_dependency 'patch_finder', '>= 1.0.2'
 
   # rb-readline doesn't work with Ruby Installer due to error with Fiddle:
   #   NoMethodError undefined method `dlopen' for Fiddle:Module
