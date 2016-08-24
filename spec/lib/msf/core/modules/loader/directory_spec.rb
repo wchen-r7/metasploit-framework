@@ -1,127 +1,166 @@
+# -*- coding:binary -*-
 require 'spec_helper'
 require 'msf/core'
 require 'msf/core/modules/loader/directory'
 
 require 'msf/core'
 
-describe Msf::Modules::Loader::Directory do
-	context 'instance methods' do
-		include_context 'Msf::Modules::Loader::Base'
+RSpec.describe Msf::Modules::Loader::Directory do
+  context 'instance methods' do
+    include_context 'Msf::Modules::Loader::Base'
 
-		let(:module_manager) do
-			mock('Module Manager')
-		end
+    let(:module_manager) do
+      double('Module Manager')
+    end
 
-		let(:module_path) do
-			"#{parent_path}/exploits/#{module_reference_name}.rb"
-		end
+    let(:module_path) do
+      "#{parent_path}/exploits/#{module_reference_name}.rb"
+    end
 
-		let(:type) do
-			'exploit'
-		end
+    let(:type) do
+      'exploit'
+    end
 
-		subject do
-			described_class.new(module_manager)
-		end
+    subject do
+      described_class.new(module_manager)
+    end
 
-		context '#load_module' do
-			context 'with existent module_path' do
-				let(:framework) do
-					framework = mock('Msf::Framework', :datastore => {})
+    context '#load_module' do
+      context 'with existent module_path' do
+        include_context 'Metasploit::Framework::Spec::Constants cleaner'
 
-					events = mock('Events')
-					events.stub(:on_module_load)
-					events.stub(:on_module_created)
-					framework.stub(:events => events)
+        let(:framework) do
+          framework = double('Msf::Framework', :datastore => {})
 
-					framework
-				end
+          events = double('Events')
+          allow(events).to receive(:on_module_load)
+          allow(events).to receive(:on_module_created)
+          allow(framework).to receive(:events).and_return(events)
 
-				let(:module_full_name) do
-					"#{type}/#{module_reference_name}"
-				end
+          framework
+        end
 
-				let(:module_manager) do
-					Msf::ModuleManager.new(framework)
-				end
+        let(:module_full_name) do
+          "#{type}/#{module_reference_name}"
+        end
 
-				let(:module_reference_name) do
-					'windows/smb/ms08_067_netapi'
-				end
+        let(:module_manager) do
+          Msf::ModuleManager.new(framework)
+        end
 
-				it 'should load a module that can be created' do
-					subject.load_module(parent_path, type, module_reference_name).should be_true
+        let(:module_reference_name) do
+          'windows/smb/ms08_067_netapi'
+        end
 
-					created_module = module_manager.create(module_full_name)
+        it 'should load a module that can be created' do
+          expect(subject.load_module(parent_path, type, module_reference_name)).to be_truthy
 
-					created_module.name.should == 'Microsoft Server Service Relative Path Stack Corruption'
-				end
-			end
+          created_module = module_manager.create(module_full_name)
 
-			context 'without existent module_path' do
-				let(:module_reference_name) do
-					'osx/armle/safari_libtiff'
-				end
+          expect(created_module.name).to eq 'MS08-067 Microsoft Server Service Relative Path Stack Corruption'
+        end
 
-				let(:error) do
-					Errno::ENOENT.new(module_path)
-				end
+        context 'with module previously loaded' do
+          before(:example) do
+            subject.load_module(parent_path, type, module_reference_name)
+          end
 
-				before(:each) do
-					module_manager.stub(:file_changed? => true)
-					module_manager.stub(:module_load_error_by_path => {})
-				end
+          # Payloads are defined as ruby Modules so they can behave differently
+          context 'with payload' do
+            let(:reference_name) do
+              'stages/windows/x64/vncinject'
+            end
 
-				it 'should not raise an error' do
-					File.exist?(module_path).should be_false
+            let(:type) do
+              'payload'
+            end
 
-					expect {
-						subject.load_module(parent_path, type, module_reference_name)
-					}.to_not raise_error
-				end
+            it 'should not load the module' do
+              expect(subject.load_module(parent_path, type, module_reference_name)).to be_falsey
+            end
+          end
 
-				it 'should return false' do
-					File.exist?(module_path).should be_false
+          # Non-payloads are defined as ruby Classes
+          context 'without payload' do
+            let(:reference_name) do
+              'windows/smb/ms08_067_netapi'
+            end
 
-					subject.load_module(parent_path, type, module_reference_name).should be_false
-				end
-			end
-		end
+            let(:type) do
+              'exploit'
+            end
 
-		context '#read_module_content' do
-			context 'with non-existent module_path' do
-				let(:module_reference_name) do
-					'osx/armle/safari_libtiff'
-				end
+            it 'should not load the module' do
+              expect(subject.load_module(parent_path, type, module_reference_name)).to be_falsey
+            end
+          end
+        end
+      end
 
-				before(:each) do
-					subject.stub(:load_error).with(module_path, kind_of(Errno::ENOENT))
-				end
+      context 'without existent module_path' do
+        let(:module_reference_name) do
+          'osx/armle/safari_libtiff'
+        end
 
-				# this ensures that the File.exist?(module_path) checks are checking the same path as the code under test
-				it 'should attempt to open the expected module_path' do
-					File.should_receive(:open).with(module_path, 'rb')
-					File.exist?(module_path).should be_false
+        let(:error) do
+          Errno::ENOENT.new(module_path)
+        end
 
-					subject.send(:read_module_content, parent_path, type, module_reference_name)
-				end
+        before(:example) do
+          allow(module_manager).to receive(:file_changed?).and_return(true)
+          allow(module_manager).to receive(:module_load_error_by_path).and_return({})
+        end
 
-				it 'should not raise an error' do
-					expect {
-						subject.send(:read_module_content, parent_path, type, module_reference_name)
-					}.to_not raise_error
-				end
+        it 'should not raise an error' do
+          expect(File.exist?(module_path)).to be_falsey
 
-				it 'should return an empty string' do
-					subject.send(:read_module_content, parent_path, type, module_reference_name).should == ''
-				end
+          expect {
+            subject.load_module(parent_path, type, module_reference_name)
+          }.to_not raise_error
+        end
 
-				it 'should record the load error' do
-					subject.should_receive(:load_error).with(module_path, kind_of(Errno::ENOENT))
+        it 'should return false' do
+          expect(File.exist?(module_path)).to be_falsey
 
-					subject.send(:read_module_content, parent_path, type, module_reference_name).should == ''
-				end
-			end
-		end
-	end
+          expect(subject.load_module(parent_path, type, module_reference_name)).to be_falsey
+        end
+      end
+    end
+
+    context '#read_module_content' do
+      context 'with non-existent module_path' do
+        let(:module_reference_name) do
+          'osx/armle/safari_libtiff'
+        end
+
+        before(:example) do
+          allow(subject).to receive(:load_error).with(module_path, kind_of(Errno::ENOENT))
+        end
+
+        # this ensures that the File.exist?(module_path) checks are checking the same path as the code under test
+        it 'should attempt to open the expected module_path' do
+          expect(File).to receive(:open).with(module_path, 'rb')
+          expect(File.exist?(module_path)).to be_falsey
+
+          subject.send(:read_module_content, parent_path, type, module_reference_name)
+        end
+
+        it 'should not raise an error' do
+          expect {
+            subject.send(:read_module_content, parent_path, type, module_reference_name)
+          }.to_not raise_error
+        end
+
+        it 'should return an empty string' do
+          expect(subject.send(:read_module_content, parent_path, type, module_reference_name)).to eq ''
+        end
+
+        it 'should record the load error' do
+          expect(subject).to receive(:load_error).with(module_path, kind_of(Errno::ENOENT))
+
+          expect(subject.send(:read_module_content, parent_path, type, module_reference_name)).to eq ''
+        end
+      end
+    end
+  end
 end

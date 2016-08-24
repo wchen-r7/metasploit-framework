@@ -1,142 +1,178 @@
 ##
-# This file is part of the Metasploit Framework and may be subject to
-# redistribution and commercial restrictions. Please see the Metasploit
-# web site for more information on licensing and terms of use.
-#   http://metasploit.com/
+# This module requires Metasploit: http://metasploit.com/download
+# Current source: https://github.com/rapid7/metasploit-framework
 ##
 
 
 require 'msf/core'
+require 'recog'
+
+class MetasploitModule < Msf::Auxiliary
 
 
-class Metasploit3 < Msf::Auxiliary
+  # Exploit mixins should be called first
+  include Msf::Exploit::Remote::DCERPC
+  include Msf::Exploit::Remote::SMB::Client
+  include Msf::Exploit::Remote::SMB::Client::Authenticated
+
+  # Scanner mixin should be near last
+  include Msf::Auxiliary::Scanner
+  include Msf::Auxiliary::Report
+
+  # Aliases for common classes
+  SIMPLE = Rex::Proto::SMB::SimpleClient
+  XCEPT  = Rex::Proto::SMB::Exceptions
+  CONST  = Rex::Proto::SMB::Constants
 
 
-	# Exploit mixins should be called first
-	include Msf::Exploit::Remote::DCERPC
-	include Msf::Exploit::Remote::SMB
-	include Msf::Exploit::Remote::SMB::Authenticated
+  def initialize
+    super(
+      'Name'        => 'SMB Version Detection',
+      'Description' => 'Display version information about each system',
+      'Author'      => 'hdm',
+      'License'     => MSF_LICENSE
+    )
 
-	# Scanner mixin should be near last
-	include Msf::Auxiliary::Scanner
-	include Msf::Auxiliary::Report
+    deregister_options('RPORT')
+    deregister_options('SMBDIRECT')
+    @smb_port = 445
+  end
 
-	# Aliases for common classes
-	SIMPLE = Rex::Proto::SMB::SimpleClient
-	XCEPT  = Rex::Proto::SMB::Exceptions
-	CONST  = Rex::Proto::SMB::Constants
+  def rport
+    @smb_port || datastore['RPORT']
+  end
 
+  def smb_direct
+    (@smb_port == 445)
+  end
 
-	def initialize
-		super(
-			'Name'        => 'SMB Version Detection',
-			'Description' => 'Display version information about each system',
-			'Author'      => 'hdm',
-			'License'     => MSF_LICENSE
-		)
+  # Fingerprint a single host
+  #
+  def run_host(ip)
+    smb_ports = [445, 139]
+    smb_ports.each do |pnum|
+      @smb_port = pnum
+      self.simple = nil
 
-		deregister_options('RPORT')
-	end
+    begin
+      res = smb_fingerprint()
 
-	# Fingerprint a single host
-	def run_host(ip)
-		[[445, true], [139, false]].each do |info|
+      #
+      # Create the note hash for smb.fingerprint
+      #
+      conf = {
+         :native_os => res['native_os'],
+         :native_lm => res['native_lm']
+      }
 
-		datastore['RPORT'] = info[0]
-		datastore['SMBDirect'] = info[1]
-		self.simple = nil
+      if res['os'] and res['os'] != 'Unknown'
 
-		begin
-			res = smb_fingerprint()
+        #
+        # Create the note hash for fingerprint.match
+        #
+        match_conf = { }
 
-			if(res['os'] and res['os'] != 'Unknown')
+        #
+        # Create a descriptive string for service.info
+        #
+        desc = res['os'].dup
 
-				case res['os']
-				when /Windows/
-					os = OperatingSystems::WINDOWS
-				else
-					case res['sp']
-					when /apple/
-						os = OperatingSystems::MAC_OSX
-						res['os'] = 'Mac OS X'
-					when /ubuntu/
-						os = OperatingSystems::LINUX
-						res['os'] = 'Ubuntu'
-					when /debian/
-						os = OperatingSystems::LINUX
-						res['os'] = 'Debian'
-					else
-						os = OperatingSystems::UNKNOWN
-					end
-				end
+        if res['edition'].to_s.length > 0
+          desc << " #{res['edition']}"
+          conf[:os_edition] = res['edition']
+          match_conf['os.edition'] = res['edition']
+        end
 
-				desc = "#{res['os']} #{res['sp']} (language: #{res['lang']})"
-				if(simple.client.default_name)
-					desc << " (name:#{simple.client.default_name})"
-				end
+        if res['sp'].to_s.length > 0
+          desc << " #{res['sp'].downcase.gsub('service pack ', 'SP')}"
+          conf[:os_sp] = res['sp']
+          match_conf['os.version'] = res['sp']
+        end
 
-				if(simple.client.default_domain)
-					desc << " (domain:#{simple.client.default_domain})"
-				end
+        if res['build'].to_s.length > 0
+          desc << " (build:#{res['build']})"
+          conf[:os_build] = res['build']
+          match_conf['os.build'] = res['build']
+        end
 
-				print_status("#{rhost}:#{rport} is running #{desc}")
+        if res['lang'].to_s.length > 0 and res['lang'] != 'Unknown'
+          desc << " (language:#{res['lang']})"
+          conf[:os_lang] = res['lang']
+          match_conf['os.language'] = conf[:os_lang]
+        end
 
-				report_service(
-					:host  => ip,
-					:port  => info[0],
-					:proto => 'tcp',
-					:name  => 'smb',
-					:info  => desc
-				)
+        if simple.client.default_name
+          desc << " (name:#{simple.client.default_name})"
+          conf[:SMBName] = simple.client.default_name
+          match_conf['host.name'] = conf[:SMBName]
+        end
 
-				conf = {
-					:os_flavor => res['os'],
-					:os_name => os,
-				}
+        if simple.client.default_domain
+          desc << " (domain:#{simple.client.default_domain})"
+          conf[:SMBDomain] = simple.client.default_domain
+          match_conf['host.domain'] = conf[:SMBDomain]
+        end
 
-				conf[:os_sp]   = res['sp']   if res['sp']
-				conf[:os_lang] = res['lang'] if res['os'] =~ /Windows/
-				conf[:SMBName] = simple.client.default_name if simple.client.default_name
-				conf[:SMBDomain] = simple.client.default_domain if simple.client.default_domain
+        print_status("#{rhost}:#{rport} is running #{desc}")
 
-				report_note(
-					:host  => ip,
-					:port  => info[0],
-					:proto => 'tcp',
-					:ntype => 'smb.fingerprint',
-					:data  => conf
-				)
+        # Report the service with a friendly banner
+        report_service(
+          :host  => ip,
+          :port  => rport,
+          :proto => 'tcp',
+          :name  => 'smb',
+          :info  => desc
+        )
 
-			else
-				report_service(:host => ip, :port => info[0], :name => 'smb')
-				print_status("#{rhost} could not be identified")
-			end
+        # Report a fingerprint.match hash for name, domain, and language
+        # Ignore OS fields, as those are handled via smb.fingerprint
+        report_note(
+          :host  => ip,
+          :port  => rport,
+          :proto => 'tcp',
+          :ntype => 'fingerprint.match',
+          :data  => match_conf
+        )
+      else
+        desc = "#{res['native_os']} (#{res['native_lm']})"
+        report_service(:host => ip, :port => rport, :name => 'smb', :info => desc)
+        print_status("#{rhost}:#{rport} could not be identified: #{desc}")
+      end
 
-			disconnect
+      # Report a smb.fingerprint hash of attributes for OS fingerprinting
+      report_note(
+        :host  => ip,
+        :port  => rport,
+        :proto => 'tcp',
+        :ntype => 'smb.fingerprint',
+        :data  => conf
+      )
 
-			break
+      disconnect
 
-		rescue ::Rex::Proto::SMB::Exceptions::NoReply => e
-			next
-		rescue ::Rex::Proto::SMB::Exceptions::ErrorCode  => e
-			next
-		rescue ::Rex::Proto::SMB::Exceptions::LoginError => e
-			# Vista has 139 open but doesnt like *SMBSERVER
-			if(e.to_s =~ /server refused our NetBIOS/)
-				next
-			end
+      break
 
-			return
-		rescue ::Timeout::Error
-		rescue ::Rex::ConnectionError
-			next
+    rescue ::Rex::Proto::SMB::Exceptions::NoReply => e
+      next
+    rescue ::Rex::Proto::SMB::Exceptions::ErrorCode  => e
+      next
+    rescue ::Rex::Proto::SMB::Exceptions::LoginError => e
+      # Vista has 139 open but doesnt like *SMBSERVER
+      if(e.to_s =~ /server refused our NetBIOS/)
+        next
+      end
 
-		rescue ::Exception => e
-			print_error("#{rhost}: #{e.class} #{e}")
-		ensure
-			disconnect
-		end
-		end
-	end
+      return
+    rescue ::Timeout::Error
+    rescue ::Rex::ConnectionError
+      next
+
+    rescue ::Exception => e
+      print_error("#{rhost}: #{e.class} #{e}")
+    ensure
+      disconnect
+    end
+    end
+  end
 
 end

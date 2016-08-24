@@ -7,7 +7,6 @@ require 'pathname'
 #
 # Project
 #
-require 'fastlib'
 require 'msf/core'
 require 'msf/core/module_set'
 
@@ -121,6 +120,7 @@ module Msf
       self.module_info_by_path = {}
       self.enablement_by_type = {}
       self.module_load_error_by_path = {}
+      self.module_load_warnings = {}
       self.module_paths = []
       self.module_set_by_type = {}
 
@@ -141,17 +141,12 @@ module Msf
     # providers it wishes to monitor.  This can be used to allow modules
     # to automatically execute or perform other tasks when certain
     # events occur.  For instance, when a new host is detected, other
-    # aux modules may wish to run such that they can collect more
+    # auxiliary modules may wish to run such that they can collect more
     # information about the host that was detected.
     #
-    # @param mod [Class] A subclass of Msf::Module
+    # @param klass [Class<Msf::Module>] The module class
     # @return [void]
-    def auto_subscribe_module(mod)
-      # If auto-subscribe has been disabled
-      if (framework.datastore['DisableAutoSubscribe'] and
-          framework.datastore['DisableAutoSubscribe'] =~ /^(y|1|t)/)
-        return
-      end
+    def auto_subscribe_module(klass)
 
       # If auto-subscription is enabled (which it is by default), figure out
       # if it subscribes to any particular interfaces.
@@ -160,15 +155,15 @@ module Msf
       #
       # Exploit event subscriber check
       #
-      if (mod.include?(Msf::ExploitEvent) == true)
-        framework.events.add_exploit_subscriber((inst) ? inst : (inst = mod.new))
+      if (klass.include?(Msf::ExploitEvent) == true)
+        framework.events.add_exploit_subscriber((inst) ? inst : (inst = klass.new))
       end
 
       #
       # Session event subscriber check
       #
-      if (mod.include?(Msf::SessionEvent) == true)
-        framework.events.add_session_subscriber((inst) ? inst : (inst = mod.new))
+      if (klass.include?(Msf::SessionEvent) == true)
+        framework.events.add_session_subscriber((inst) ? inst : (inst = klass.new))
       end
     end
 

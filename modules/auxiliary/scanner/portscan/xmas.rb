@@ -1,139 +1,155 @@
 ##
-# This file is part of the Metasploit Framework and may be subject to
-# redistribution and commercial restrictions. Please see the Metasploit
-# web site for more information on licensing and terms of use.
-#   http://metasploit.com/
+# This module requires Metasploit: http://metasploit.com/download
+# Current source: https://github.com/rapid7/metasploit-framework
 ##
 
 require 'msf/core'
 
-class Metasploit3 < Msf::Auxiliary
+class MetasploitModule < Msf::Auxiliary
 
-	include Msf::Exploit::Capture
-	include Msf::Auxiliary::Scanner
-	include Msf::Auxiliary::Report
+  include Msf::Exploit::Capture
+  include Msf::Auxiliary::Scanner
+  include Msf::Auxiliary::Report
 
-	def initialize
-		super(
-			'Name'        => 'TCP "XMas" Port Scanner',
-			'Description' => %q{
-				Enumerate open|filtered TCP services using a raw
-				"XMas" scan; this sends probes containing the FIN,
-				PSH and URG flags.
-			},
-			'Author'      => 'kris katterjohn',
-			'License'     => MSF_LICENSE
-		)
+  def initialize
+    super(
+      'Name'        => 'TCP "XMas" Port Scanner',
+      'Description' => %q{
+        Enumerate open|filtered TCP services using a raw
+        "XMas" scan; this sends probes containing the FIN,
+        PSH and URG flags.
+      },
+      'Author'      => 'kris katterjohn',
+      'License'     => MSF_LICENSE
+    )
 
-		register_options([
-			OptString.new('PORTS', [true, "Ports to scan (e.g. 22-25,80,110-900)", "1-10000"]),
-			OptInt.new('TIMEOUT', [true, "The reply read timeout in milliseconds", 500]),
-			OptInt.new('BATCHSIZE', [true, "The number of hosts to scan per set", 256]),
-			OptString.new('INTERFACE', [false, 'The name of the interface'])
-		], self.class)
+    register_options([
+      OptString.new('PORTS', [true, "Ports to scan (e.g. 22-25,80,110-900)", "1-10000"]),
+      OptInt.new('TIMEOUT', [true, "The reply read timeout in milliseconds", 500]),
+      OptInt.new('BATCHSIZE', [true, "The number of hosts to scan per set", 256]),
+      OptInt.new('DELAY', [true, "The delay between connections, per thread, in milliseconds", 0]),
+      OptInt.new('JITTER', [true, "The delay jitter factor (maximum value by which to +/- DELAY) in milliseconds.", 0]),
+      OptString.new('INTERFACE', [false, 'The name of the interface'])
+    ], self.class)
 
-		deregister_options('FILTER','PCAPFILE')
-	end
+    deregister_options('FILTER','PCAPFILE')
+  end
 
-	# No IPv6 support yet
-	def support_ipv6?
-		false
-	end
+  # No IPv6 support yet
+  def support_ipv6?
+    false
+  end
 
-	def run_batch_size
-		datastore['BATCHSIZE'] || 256
-	end
+  def run_batch_size
+    datastore['BATCHSIZE'] || 256
+  end
 
-	def run_batch(hosts)
-		open_pcap
+  def run_batch(hosts)
+    open_pcap
 
-		pcap = self.capture
+    pcap = self.capture
 
-		ports = Rex::Socket.portspec_crack(datastore['PORTS'])
+    ports = Rex::Socket.portspec_crack(datastore['PORTS'])
+    if ports.empty?
+      raise Msf::OptionValidateError.new(['PORTS'])
+    end
 
-		if ports.empty?
-			print_error("Error: No valid ports specified")
-			return
-		end
+    jitter_value = datastore['JITTER'].to_i
+    if jitter_value < 0
+      raise Msf::OptionValidateError.new(['JITTER'])
+    end
 
-		to = (datastore['TIMEOUT'] || 500).to_f / 1000.0
+    delay_value = datastore['DELAY'].to_i
+    if delay_value < 0
+      raise Msf::OptionValidateError.new(['DELAY'])
+    end
 
-		# Spread the load across the hosts
-		ports.each do |dport|
-			hosts.each do |dhost|
-				shost, sport = getsource(dhost)
+    to = (datastore['TIMEOUT'] || 500).to_f / 1000.0
 
-				pcap.setfilter(getfilter(shost, sport, dhost, dport))
+    # we copy the hosts because some may not be reachable and need to be ejected
+    host_queue = hosts.dup
+    # Spread the load across the hosts
+    ports.each do |dport|
+      host_queue.each do |dhost|
+        shost, sport = getsource(dhost)
 
-				begin
-					probe = buildprobe(shost, sport, dhost, dport)
+        pcap.setfilter(getfilter(shost, sport, dhost, dport))
 
-					capture_sendto(probe, dhost)
+        begin
+          probe = buildprobe(shost, sport, dhost, dport)
 
-					reply = probereply(pcap, to)
+          # Add the delay based on JITTER and DELAY if needs be
+          add_delay_jitter(delay_value,jitter_value)
 
-					next if reply # Got a RST back
+          unless capture_sendto(probe, dhost)
+            host_queue.delete(dhost)
+            next
+          end
 
-					print_status(" TCP OPEN|FILTERED #{dhost}:#{dport}")
+          reply = probereply(pcap, to)
 
-					#Add Report
-					report_note(
-						:host	=> dhost,
-						:proto	=> 'tcp',
-						:port	=> dport,
-						:type	=> "TCP OPEN|FILTERED #{dhost}:#{dport}",
-						:data	=> "TCP OPEN|FILTERED #{dhost}:#{dport}"
-					)
+          next if reply # Got a RST back
 
-				rescue ::Exception
-					print_error("Error: #{$!.class} #{$!}")
-				end
-			end
-		end
+          print_status(" TCP OPEN|FILTERED #{dhost}:#{dport}")
 
-		close_pcap
-	end
+          # Add Report
+          report_note(
+            :host	=> dhost,
+            :proto	=> 'tcp',
+            :port	=> dport,
+            :type	=> "TCP OPEN|FILTERED #{dhost}:#{dport}",
+            :data	=> "TCP OPEN|FILTERED #{dhost}:#{dport}"
+          )
 
-	def getfilter(shost, sport, dhost, dport)
-		# Look for associated RSTs
-		"tcp and (tcp[13] & 0x04) != 0 and " +
-		"src host #{dhost} and src port #{dport} and " +
-		"dst host #{shost} and dst port #{sport}"
-	end
+        rescue ::Exception
+          print_error("Error: #{$!.class} #{$!}")
+        end
+      end
+    end
 
-	def getsource(dhost)
-		# srcip, srcport
-		[ Rex::Socket.source_address(dhost), rand(0xffff - 1025) + 1025 ]
-	end
+    close_pcap
+  end
 
-	def buildprobe(shost, sport, dhost, dport)
-		p = PacketFu::TCPPacket.new
-		p.ip_saddr = shost
-		p.ip_daddr = dhost
-		p.tcp_sport = sport
-		p.tcp_flags.fin = 1
-		p.tcp_flags.urg = 1
-		p.tcp_flags.psh = 1
-		p.tcp_dport = dport
-		p.tcp_win = 3072
-		p.recalc
-		p
-	end
+  def getfilter(shost, sport, dhost, dport)
+    # Look for associated RSTs
+    "tcp and (tcp[13] & 0x04) != 0 and " +
+    "src host #{dhost} and src port #{dport} and " +
+    "dst host #{shost} and dst port #{sport}"
+  end
 
-	def probereply(pcap, to)
-		reply = nil
-		begin
-			Timeout.timeout(to) do
-				pcap.each do |r|
-					pkt = PacketFu::Packet.parse(r)
-					next unless pkt.is_tcp?
-					reply = pkt
-					break
-				end
-			end
-		rescue Timeout::Error
-		end
-		return reply
-	end
+  def getsource(dhost)
+    # srcip, srcport
+    [ Rex::Socket.source_address(dhost), rand(0xffff - 1025) + 1025 ]
+  end
+
+  def buildprobe(shost, sport, dhost, dport)
+    p = PacketFu::TCPPacket.new
+    p.ip_saddr = shost
+    p.ip_daddr = dhost
+    p.tcp_sport = sport
+    p.tcp_flags.fin = 1
+    p.tcp_flags.urg = 1
+    p.tcp_flags.psh = 1
+    p.tcp_dport = dport
+    p.tcp_win = 3072
+    p.recalc
+    p
+  end
+
+  def probereply(pcap, to)
+    reply = nil
+    begin
+      Timeout.timeout(to) do
+        pcap.each do |r|
+          pkt = PacketFu::Packet.parse(r)
+          next unless pkt.is_tcp?
+          reply = pkt
+          break
+        end
+      end
+    rescue Timeout::Error
+    end
+    return reply
+  end
 
 end

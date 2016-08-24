@@ -1,4 +1,3 @@
-#!/usr/bin/env ruby
 # -*- coding: binary -*-
 
 module Rex
@@ -13,80 +12,88 @@ module Meterpreter
 ###
 class PacketParser
 
-	#
-	# Initializes the packet parser context with an optional cipher.
-	#
-	def initialize(cipher = nil)
-		self.cipher = cipher
+  # 4 byte xor
+  # 4 byte length
+  # 4 byte type
+  HEADER_SIZE = 12
 
-		reset
-	end
+  #
+  # Initializes the packet parser context with an optional cipher.
+  #
+  def initialize(cipher = nil)
+    self.cipher = cipher
 
-	#
-	# Resets the parser state so that a new packet can begin being parsed.
-	#
-	def reset
-		self.raw = ''
-		self.hdr_length_left = 8
-		self.payload_length_left = 0
-	end
+    reset
+  end
 
-	#
-	# Reads data from the wire and parse as much of the packet as possible.
-	#
-	def recv(sock)
-		if (self.hdr_length_left > 0)
-			buf = sock.read(self.hdr_length_left)
+  #
+  # Resets the parser state so that a new packet can begin being parsed.
+  #
+  def reset
+    self.raw = ''
+    self.hdr_length_left = HEADER_SIZE
+    self.payload_length_left = 0
+  end
 
-			if (buf)
-				self.raw << buf
+  #
+  # Reads data from the wire and parse as much of the packet as possible.
+  #
+  def recv(sock)
+    # Create a typeless packet
+    packet = Packet.new(0)
 
-				self.hdr_length_left -= buf.length
-			else
-				raise EOFError
-			end
+    if (self.hdr_length_left > 0)
+      buf = sock.read(self.hdr_length_left)
 
-			# If we've finished reading the header, set the
-			# payload length left to the number of bytes
-			# specified in the length
-			if (self.hdr_length_left == 0)
-				self.payload_length_left = raw.unpack("N")[0] - 8
-			end
-		elsif (self.payload_length_left > 0)
-			buf = sock.read(self.payload_length_left)
+      if (buf)
+        self.raw << buf
 
-			if (buf)
-				self.raw << buf
+        self.hdr_length_left -= buf.length
+      else
+        raise EOFError
+      end
 
-				self.payload_length_left -= buf.length
-			else
-				raise EOFError
-			end
-		end
+      # If we've finished reading the header, set the
+      # payload length left to the number of bytes
+      # specified in the length
+      if (self.hdr_length_left == 0)
+        xor_key = raw[0, 4].unpack('N')[0]
+        length_bytes = packet.xor_bytes(xor_key, raw[4, 4])
+        # header size doesn't include the xor key, which is always tacked on the front
+        self.payload_length_left = length_bytes.unpack("N")[0] - (HEADER_SIZE - 4)
+      end
+    elsif (self.payload_length_left > 0)
+      buf = sock.read(self.payload_length_left)
 
-		# If we've finished reading the entire packet
-		if ((self.hdr_length_left == 0) &&
-		    (self.payload_length_left == 0))
+      if (buf)
+        self.raw << buf
 
-			# Create a typeless packet
-			packet = Packet.new(0)
+        self.payload_length_left -= buf.length
+      else
+        raise EOFError
+      end
+    end
 
-			# TODO: cipher decryption
-			if (cipher)
-			end
+    # If we've finished reading the entire packet
+    if ((self.hdr_length_left == 0) &&
+        (self.payload_length_left == 0))
 
-			# Serialize the packet from the raw buffer
-			packet.from_r(self.raw)
+      # TODO: cipher decryption
+      if (cipher)
+      end
 
-			# Reset our state
-			reset
+      # Deserialize the packet from the raw buffer
+      packet.from_r(self.raw)
 
-			return packet
-		end
-	end
+      # Reset our state
+      reset
+
+      return packet
+    end
+  end
 
 protected
-	attr_accessor :cipher, :raw, :hdr_length_left, :payload_length_left  # :nodoc:
+  attr_accessor :cipher, :raw, :hdr_length_left, :payload_length_left  # :nodoc:
 
 end
 
