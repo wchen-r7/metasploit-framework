@@ -8,7 +8,7 @@ module Metasploit
         attr_reader :hello_message
 
         def initialize(msg)
-          hello_message = msg
+          @hello_message = msg
         end
 
         def say_hi
